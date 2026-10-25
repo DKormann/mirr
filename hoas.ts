@@ -3,25 +3,28 @@
 
 
 
-type F = { $: "hoas",  hoas: (...t:Term[]) => Term } // | { fndef: Term }
+// Types live in .ty; srcs contains only the node's children.
+type F      = { $: "hoas", name?: string, srcs: [], hoas: (...t: Term[]) => Term }
 
-type Type   = { ty: Term, $: "Type" , name?: string}
-type Arrow  = { ty: Term, $: "Arrow" , name?: string, DOM: Term, COD: F }
-type SIG    = { ty: Term, $: "SIG" , name?: string, Ts: (Term| F) [] }
-type ENU    = { ty: Term, $: "ENU", name?: string, options: Term[] }
-type TUP    = { ty: Term, $: "TUP", name?: string, fields: Term[] }
-type CHOICE = { ty: Term, $: "CHOICE", name?: string, tag: number, C: Term }
-type COTUP  = { ty: Term, $: "COTUP", name?: string, bod: F }
-type COCHC  = { ty: Term, $: "COCHC", name?: string, arms: F[] }
-type APP    = { ty: Term, $: "APP", name?: string, F: Term, ARG: Term }
-type SYM    = { ty: Term, $: "SYM", name?: string, n: number }
+type Type   = { ty: Term, $: "Type", name?: string, srcs: [] }
+
+type Arrow  = { ty: Term, $: "Arrow", name?: string, srcs: [Term, F|Term] }
+type SIG    = { ty: Term, $: "SIG", name?: string, srcs: (Term|F)[] }
+type ENU    = { ty: Term, $: "ENU", name?: string, srcs: Term[] }
+
+type TUP    = { ty: Term, $: "TUP", name?: string, srcs: Term[] }
+type CHOICE = { ty: Term, $: "CHOICE", name?: string, tag: number, srcs: [Term] }
+type COTUP  = { ty: Term, $: "COTUP", name?: string, srcs: [F] }
+type COCHC  = { ty: Term, $: "COCHC", name?: string, srcs: F[]}
+type APP    = { ty: Term, $: "APP", name?: string, srcs: [Term, Term] }
+type SYM    = { ty: Term, $: "SYM", name?: string, n: number, srcs: [] }
 
 type Term = Type | Arrow | SIG | ENU | TUP | CHOICE | COTUP | COCHC | APP | SYM
 
-
-const Type = {$: "Type"} as Type
+const Type = {$: "Type", srcs: []} as Type
 Type.ty = Type
 
+// TODO:
 
 
 function raise(msg: string): never {
@@ -32,20 +35,21 @@ function fmt(t: Term){
   
 
   let scounter = 0
-  let fresh = (ty: Term) :SYM => ({ ty, $: "SYM", n: scounter++ })
+  let fresh = (type: Term) :SYM => ({ ty: type, $: "SYM", srcs: [], n: scounter++ })
 
   function go(t:Term , d:number):string{
 
     if (t.$ == "Type") return 'Type'
 
     if (t.$ == "Arrow") {
-      let v = fresh(t.DOM)
-      return `(${pln(v, d)}: ${pln(t.DOM, d)} -> ${pln(t.COD.hoas(v), d)})`
+      let v = fresh(t.srcs[0])
+      let cod = t.srcs[1]
+      return `(${pln(v, d)}: ${pln(t.srcs[0], d)} -> ${pln(cod.$ == "hoas" ? cod.hoas(v) : cod, d)})`
     }
     if (t.$ == "SIG"){
 
       let vs: SYM[] = []
-      for (let T of t.Ts){
+      for (let T of t.srcs){
         if ("hoas" in T){
           vs.push(fresh(T.hoas(...vs)))
         }else{
@@ -56,22 +60,22 @@ function fmt(t: Term){
     }
 
 
-    if ("options" in t){
-      return `(${t.options.map(o => pln(o, d)).join(' | ')})`
+    if (t.$ == "ENU"){
+      return `(${t.srcs.map(o => pln(o, d)).join(' | ')})`
     }
 
-    if ("tag" in t){
-      return `(#${t.tag}: ${pln(t.C, d)}) : ${pln(t.ty, d)}`
+    if (t.$ == "CHOICE"){
+      return `(#${t.tag}: ${pln(t.srcs[0], d)}) : ${pln(t.ty, d)}`
     }
 
-    if ("fields" in t){
-      return `{${t.fields.map(f => pln(f, d)).join(', ')}} : ${pln(t.ty, d)}`
+    if (t.$ == "TUP"){
+      return `{${t.srcs.map(f => pln(f, d)).join(', ')}} : ${pln(t.ty, d)}`
     }
     if ("n" in t) {
       return `x${t.n}`
     }
     if (t.$ == "APP"){
-      return `(${pln(t.F, d)} ${pln(t.ARG, d)})`
+      return `(${pln(t.srcs[0], d)} ${pln(t.srcs[1], d)})`
     }
 
     if (t.$ == "COTUP"){
@@ -115,23 +119,23 @@ function parseType(t: ttoks): Term {
 
   if (t == Type) return Type
 
-  if ("ty" in t) return t
+  if ("srcs" in t) return t
 
   if (Array.isArray(t)){
     if (typeof t[0] == 'number') raise(`Unexpected number array: ${JSON.stringify(t)}`)
-    return { ty: Type, $: "SIG", Ts: t.map(x=> parseType(x)) }
+    return { ty: Type, $: "SIG", srcs: t.map(x => parseType(x)) }
   }
 
 
   if ("T" in t) return parseType(t.T)
   
   if ("enu" in t){
-    return { ty: Type, $: "ENU", options: t.enu.map(x => parseType(x)) }
+    return { ty: Type, $: "ENU", srcs: t.enu.map(x => parseType(x)) }
   }
   if ("sig" in t){
     return { ty: Type, $: "SIG",
-      Ts: t.sig.map(x => typeof x =="function"
-        ? { $: "hoas" , "hoas": (...t:Term[])=>parseType(x(...t))}
+      srcs: t.sig.map(x => typeof x == "function"
+        ? { $: "hoas" as const, srcs: [] as [], hoas: (...t: Term[]) => parseType(x(...t)) }
         : parseType(x)) }
   }
 
@@ -142,18 +146,18 @@ function parseType(t: ttoks): Term {
 }
 
 function parseToks(t: toks, ty?: Term): Term{
-  if ("ty" in t) return t
+  if ("srcs" in t) return t
 
   if (Array.isArray(t)) {
     if (typeof t[0] === 'number'){
 
       if (!ty) raise(`Unexpected number array without type: ${JSON.stringify(t)}`)
-      return { ty: ty, $: "CHOICE", "tag": t[0], C : parseToks(t[1]) }
+      return { ty, $: "CHOICE", tag: t[0], srcs: [parseToks(t[1])] }
     }
 
     let tms = t.map(x=> parseToks(x as ttoks))
-    let T : SIG = {ty: Type, $:"SIG", Ts: tms.map(t=>t.ty)}
-    return { ty: ty ?? T, $: "TUP", fields: tms}
+    let T : SIG = {ty: Type, $:"SIG", srcs: tms.map(t => t.ty)}
+    return { ty: ty ?? T, $: "TUP", srcs: tms}
 
   }
 
@@ -188,17 +192,17 @@ print(SIG1)
 
 function whnf(t:Term): Term{
   if (t.$ == "APP"){
-    let f = whnf(t.F)
+    let f = whnf(t.srcs[0])
     if(f.$ == "COCHC"){
-      let a = whnf(t.ARG)
+      let a = whnf(t.srcs[1])
       if (a.$ == "CHOICE"){
-        return whnf(f.arms[a.tag].hoas(a.C))
+        return whnf(f.srcs[a.tag].hoas(a.srcs[0]))
       }
     }
     if (f.$ == "COTUP"){
-      let a = whnf(t.ARG)
+      let a = whnf(t.srcs[1])
       if (a.$ == "TUP"){
-        return whnf(f.bod.hoas(...a.fields))
+        return whnf(f.srcs[0].hoas(...a.srcs))
       }
     }
   }
@@ -213,26 +217,27 @@ function structeEQ(a: Term, b: Term){
 }
 
 function checkTerm(t: Term){
-  let ty = whnf(t.ty)
+  let type = whnf(t.ty)
   switch(t.$){
     case "SIG":{
-      if (ty.$ != "Type") raise(`Expected type for SIG, got: ${JSON.stringify(ty)}`)
+      if (type.$ != "Type") raise(`Expected type for SIG, got: ${JSON.stringify(type)}`)
       break;
     }
     case "ENU":{
-      if (ty.$ != "Type") raise(`Expected type for ENU, got: ${JSON.stringify(ty)}`)
+      if (type.$ != "Type") raise(`Expected type for ENU, got: ${JSON.stringify(type)}`)
       break;
     }
     case "TUP":{
-      if (ty.$ != "SIG") raise(`Expected type for TUP, got: ${JSON.stringify(ty)}`)
+      if (type.$ != "SIG") raise(`Expected type for TUP, got: ${JSON.stringify(type)}`)
       
-      let Ts = ty.Ts
-      if (Ts.length != t.fields.length) raise(`Expected ${Ts.length} fields for TUP, got: ${t.fields.length}`)
+      let Ts = type.srcs
+      let fields = t.srcs
+      if (Ts.length != fields.length) raise(`Expected ${Ts.length} fields for TUP, got: ${fields.length}`)
       let checked : Term [] = []
       for (let i = 0; i < Ts.length; i++){
         let T = Ts[i];
         if (T.$ == "Type"){
-          let fl = t.fields[i]
+          let fl = fields[i]
           
         }
       }
