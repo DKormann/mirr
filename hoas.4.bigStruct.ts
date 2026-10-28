@@ -1,21 +1,25 @@
 type F = (...t: Term[]) => Term
 
 type Type     = { ty: Term, $: "Type",     name?: string }
-type Arrow    = { ty: Term, $: "Arrow",    name?: string, DOM: Term, COD: F }
 
-type STRUCT   = { ty: Term, $: "STRUCT",   name?: string, srcs: F[] }
+type Arrow    = { ty: Term, $: "Arrow",    name?: string, DOM: Term, COD: F }
+type STRUCT   = { ty: Term, $: "STRUCT",   name?: string, size: number, SRC: (...t:Term[]) => Term[]}
 type CHOICE   = { ty: Term, $: "CHOICE",   name?: string, srcs: Term[] }
+type EQ       = { ty: Term, $: "EQ",       name?: string, L: Term, R: Term }
 
 type struct   = { ty: Term, $: "struct",   name?: string, srcs: Term[] }
 type choice   = { ty: Term, $: "choice",   name?: string, tag: number, src: Term }
+type eq       = { ty: Term, $: "eq",       name?: string }
 
 type destruct = { ty: Term, $: "destruct", name?: string, scr?: Term, runner: F }
-type match    = { ty: Term, $: "match",    name?: string, scr: Term, srcs: F[]}
+type match    = { ty: Term, $: "match",    name?: string, scr: Term, srcs: F[] }
+type RW       = { ty: Term, $: "RW",       name?: string, scr: Term, eq: Term, P: F }
 
 type APP      = { ty: Term, $: "APP",      name?: string, fn: Term, arg:Term }
 type SYM      = { ty: Term, $: "SYM",      name?: string, n: number }
 
-type Term = Type | Arrow | STRUCT | CHOICE | struct | choice | destruct | match | APP | SYM
+
+type Term = Type | Arrow | STRUCT | CHOICE | struct | choice | destruct | match | APP | SYM | EQ | eq | RW
 
 const Type = {$: "Type"} as Type
 Type.ty = Type
@@ -25,25 +29,24 @@ function raise(msg: string): never {
 }
 const seen = new Set<Term | F>()
 
+function zip<T,S,U>(ts: T[], s: S[], f: (t: T, s: S)=>U): U[] {
+  if (ts.length !== s.length) throw new Error("zip: arrays must have the same length")
+  return ts.map((t, i) => f(t, s[i]))
+}
 
-let fillStruct = (fr: (ty:Term) => SYM, fs: F[]): SYM[] => {
-  let vs: SYM[] = []
-  for (let T of fs){
-    vs.push(fr(T(...vs)))
-  }
-  return vs
+let fillStruct = (sctr : {c: number}, s: STRUCT): SYM[] => {
+  let vs = Array.from({length: s.size}, (_, i) => sym(sctr.c++, {} as Term))
+  return zip(s.SRC(...vs), vs, (ty, v)=> Object.assign(v, {ty}))
 }
 
 function fmt(t: Term){
 
-  let scounter = 0
-  let fresh = (ty: Term) => sym(scounter++, ty)
+  let scounter = {c: 0}
 
+  function go(t:Term ):string{
 
-  function go(t:Term):string{
-
-    function gofn(f: F, args: F[]): string{
-      let s = fillStruct(fresh, args)
+    function gofn(f: F, args: STRUCT): string{
+      let s = fillStruct(scounter, args)
       return `{${s.map(v => pln(v)).join(', ')}} => ${pln(f(...s))}`
     }
 
@@ -53,12 +56,12 @@ function fmt(t: Term){
       let dom = t.DOM
       let cod = t.COD
 
-      let v = fresh(dom)
+      let v = sym(scounter.c++, dom)
       let bod = cod(v)
       return `(${pln(v)} : ${pln(dom)}) -> ${pln(bod)}`
     }
     if (t.$ == "STRUCT"){
-      let vs = fillStruct(fresh, t.srcs)
+      let vs = fillStruct(scounter, t)
       return `{${vs.map(v => `x${v.n} : ${pln(v.ty)}`).join(', ')}}`
     }
 
@@ -82,11 +85,23 @@ function fmt(t: Term){
 
     if (t.$ == "destruct"){
       let A :STRUCT = (t.scr?.ty ?? (t.ty.$ == "Arrow" ? t.ty.DOM : raise("cant infer"))) as STRUCT
-      return `(${t.scr? pln(t.scr) + ': ' : ''}${gofn(t.runner, A.srcs)})`
+      return `(${t.scr? pln(t.scr) + ': ' : ''}${gofn(t.runner, A)})`
     }
     if (t.$ == "match"){
-      let x = fresh(Type)
-      return `${t.srcs.map((f, i)=> `#${i}(${pln(x)}) => ${pln(f(x))}`).join(" ")}`
+      let x = sym(scounter.c++, Type)
+      return `match ${pln(t.scr)}: ${t.srcs.map((f, i)=> `#${i}(${pln(x)}) => ${pln(f(x))}`).join(" ")}`
+    }
+
+    if (t.$ == "EQ"){
+      return `(${pln(t.L)} == ${pln(t.R)})`
+    }
+
+    if (t.$ == "eq"){
+      return `{==}`
+    }
+
+    if (t.$ == "RW"){
+      return `${pln(t.scr)} % ${pln(t.eq)}`
     }
 
     console.error(t)
@@ -100,10 +115,9 @@ function fmt(t: Term){
   function pln(t:Term):string{
     if (t.name){
       if (seen.has(t)) return t.name
-
+      seen.add(t)
       let k = (`${t.name} = ${go(t)}`)
       defs.push(k)
-      seen.add(t)
       return t.name
     }
     return go(t)
@@ -145,122 +159,116 @@ function whnf(t:Term): Term{
 function checkEQ(a: Term, b: Term){
   if (a == b) return
   [a,b] = [whnf(a), whnf(b)]
+
   if (a.$ != b.$) raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
   if (a.$ == "SYM") if (a!=b) raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
   if (a.$ == "STRUCT"){
-    let ctr = 0
-    let bs=b as STRUCT
-    let vs = fillStruct(t=>sym(ctr++, t), a.srcs)
-    a.srcs.forEach((s,i)=>{
-      checkEQ(s(...vs), bs.srcs[i](...vs))
-    })
+    let vs = fillStruct({c: 0}, a);
+    zip((b as STRUCT).SRC(...vs), vs, (s, v)=> checkEQ(v.ty, s))
   }
+  if (a.$ == "EQ"){
+    b = b as EQ
+    checkEQ(a.L, b.L)
+    checkEQ(a.R, b.R)
+  }
+}
+
+function wellFounded(A: Term, a: Term):boolean{
+  if (A.$ != a.$) return false
+  if (A == a) return false 
+  if (A.$ == "struct" && a.$ == "struct"){
+    for (let i = 0; i < A.srcs.length; i++){
+      if (A.srcs[i] == a || wellFounded(A.srcs[i], a.srcs[i])) return true
+    }
+  }
+  if (A.$ == "choice" && a.$ == "choice"){
+    if (A.src == a || wellFounded(A.src, a.src)) return true
+  }
+  return false
+}
+
+
+function asTag <$ extends Term["$"]>(t: Term, tag: $) : Term & {$: $}{
+  if (t.$ != tag) raise(`Expected tag ${tag}, got ${t.$}`)
+  return t as Term & {$: $}
 }
 
 function check(t:Term){
 
-  let symCounter = 0
-  function fresh(ty: Term): SYM{ return sym(symCounter++, ty)}
+  let symCounter = {c: 0}
+  let seen = new Set<Term>()
 
-  function go(t:Term){
-    let type = whnf(t.ty)
+  type CallStack = {
+    f: Term
+    arg: Term
+    prev: CallStack
+  } | null
+
+
+  function go(t:Term, cs: CallStack, ty?:Term) :Term{
+    if (ty) checkEQ(t.ty, ty)
+    if (seen.has(t)) return t
+    seen.add(t)
+    const type = whnf(t.ty)
+
     switch(t.$){
-      case "STRUCT":{
-        if (type.$ != "Type") raise(`Expected type for TUP, got: ${fmt(type)}`)
-        break;
-      }
-
       case "struct":{
-        if (type.$ != "STRUCT") raise(`Expected type for struct, got: ${fmt(type)}`)
-    
-        let Ts = type.srcs
-        let fields = t.srcs
-        if (Ts.length != fields.length) raise(`Expected ${Ts.length} fields for struct, got: ${fields.length}`)
-        let checked : Term [] = []
-        for (let i = 0; i < Ts.length; i++){
-          let T = Ts[i];
-          let fl = fields[i]
-          checkEQ(fl.ty, T(...checked))
-          go(fl)
-          checked.push(fl) 
-        }
-        break
-      }
-      case "CHOICE":{
-        checkEQ(t.ty, Type)
-        checkEQ(t.srcs[0].ty ,Type)
-        go(t.srcs[0])
-        break
+        zip(t.srcs, asTag(type, "STRUCT").SRC(...t.srcs) , go)
+        return t
       }
       case "destruct":{
-
-        let A : Term
-        let R : F
-
         if (t.scr){
-          A = t.scr.ty
-          R = () => type
+          go(t.runner(...fillStruct(symCounter, asTag(t.scr.ty, "STRUCT"))), type)
         }else{
-          if (type.$ != "Arrow") raise(`Expected Arrow type for destruct, got: ${fmt(type)}`)
-          A = type.DOM
-          R = (...x) => type.COD(struct(A, ...x))
+          let {DOM, COD} = asTag(type, "Arrow")
+          let vs = fillStruct(symCounter, asTag(DOM, "STRUCT"))
+          go(t.runner(...vs), COD(...vs))
         }
-        if (A.$ != "STRUCT") raise(`Expected STRUCT type for destruct scrutinee, got: ${fmt(A)}`)
-        let vs = fillStruct(fresh, A.srcs)
-        let ret = t.runner(...vs)
-        let EXP = R(...vs)
-        checkEQ(ret.ty, EXP)
-        check(ret)
-        break
+        return t
       }
-      case "SYM":{
-        break
-      }
-      case "Type": break
       case "choice":{
-        if (type.$ != "CHOICE") raise(`Expected ENU type for choic, got: ${fmt(t.ty)}`)
-        if (t.tag >= type.srcs.length) raise(`Invalid tag for choic: ${t.tag}`)
-        let FT = type.srcs[t.tag]
-        checkEQ(t.src.ty, FT)
-        go(t.src)
-        break
+        let srcs = asTag(type, "CHOICE").srcs
+        if (t.tag >= srcs.length) raise(`Invalid tag for choic: ${t.tag}`)
+        go(t.src, srcs[t.tag])
+        return t
       }
       case "match":{
-        let A = t.scr.ty
-        if (A.$ != "CHOICE") raise(`Expected CHOICE type for match scrutinee, got: ${fmt(A)}`)
-        check(t.scr)
-        let old = {}
-        Object.assign(old, t.scr)
-        if (t.scr.$ != "SYM") raise(`Expected SYM for match scrutinee, got: ${fmt(t.scr)}`)
-        t.srcs.forEach((f, i) =>{
-          let inner = sym(i, A.srcs[i])
-          Object.assign(t.scr, choice(A, i, inner))
-          let out = f(inner)
-          checkEQ(out.ty, type)
-          check(out)
-        })
-
+        let A = asTag(t.scr.ty, "CHOICE")
+        asTag(t.scr, "SYM")
+        let old = {...t.scr}
+        t.srcs.forEach((f, i) => go(f(Object.assign(t.scr, choice(A, i, sym(i, A.srcs[i]))).src) ,type))
         Object.assign(t.scr, old)
-
-        break
+        return t
       }
-      case "Arrow":{
-        checkEQ(t.ty, Type)
-        break
+      case "EQ":case "CHOICE":case "STRUCT":case "Type":case "Arrow":{
+        asTag(type, "Type")
+        return t
       }
       case "APP":{
-        if (t.fn.ty.$ != "Arrow") raise(`Expected Arrow type for function application, got: ${fmt(t.fn.ty)}`)
-        let R = t.fn.ty.COD(t.arg)
-        checkEQ(t.fn.ty.DOM, t.arg.ty)
-        checkEQ(R, type)
-        checkEQ(t.ty, R)
+        let aro = asTag(t.fn.ty, "Arrow")
+        checkEQ(type, aro.COD(t.arg))
         go(t.fn)
-        go(t.arg)
-        break
+        go(t.arg, aro.DOM)
+        return t
+      }
+      case "eq":{
+        let ty = asTag(type, "EQ")
+        checkEQ(ty.L, ty.R)
+        return t
+      }
+      case "RW":{
+        let et = asTag(t.eq.ty, "EQ")
+        checkEQ(t.P(et.R), type)
+        go(t.scr, t.P(et.L))
+        go(t.eq)
+        return t
       }
     }
+    return t
   }
-  return go(t)
+
+  go(t)
+
 }
 
 /**
@@ -283,35 +291,37 @@ function CHOICE(cases: Term[], name?:string):CHOICE{
   return { $: "CHOICE", ty: Type, srcs: cases, name }
 }
 
-function STRUCT(...srcs: ft []): STRUCT{
-  return { $: "STRUCT", ty: Type, srcs: srcs.map(x => hoas(x)) }
+function STRUCT(SRC: (...t:Term[])=> Term[], size?: number): STRUCT{
+  return { $: "STRUCT", ty: Type, size: size ?? SRC.length, SRC }
 }
 
 function struct(ty: Term, ...srcs: Term[]): struct{
   return { $: "struct", ty, srcs }
 }
 
+function TUPLE(...srcs: Term[]): STRUCT{
+  return STRUCT(()=> srcs, srcs.length)
+}
+
 function tuple(...srcs: Term[]): struct{
-  return { $: "struct", ty: STRUCT(...srcs.map(x=>x.ty)), srcs }
+  return { $: "struct", ty: TUPLE(...srcs.map(x=>x.ty)), srcs }
 }
 
 function sym(n: number, ty: Term) :SYM {
   return { $: "SYM", n, ty }
 }
 
-function lam( f: (...x:Term[])=>Term, dom?:Term | Term[], cod?:Term | F): destruct {
-  dom ??= STRUCT(...Array.from({length: f.length}, (_, i) => NULL))
-  if (Array.isArray(dom)) dom = STRUCT(...dom)
-  if (dom.$ != "STRUCT") raise(`Expected STRUCT type for domain, got: ${fmt(dom)}`)
+function lam( f: (...x:Term[])=>Term, dom:STRUCT | Term[], cod?:Term | F): destruct  & {ty: Arrow}{
 
-  cod ??= f(...dom.srcs.map((x, i) => sym(i, x()))).ty
-  return { $: "destruct", ty: Arrow(dom, cod), runner: hoas(f)}
+  if (Array.isArray(dom)) dom = TUPLE(...dom)
+  if (dom.$ != "STRUCT") raise(`Expected STRUCT type for domain, got: ${fmt(dom)}`)
+  cod ??= f(...fillStruct({c: 0}, dom)).ty
+  return { $: "destruct", ty: Arrow(dom, cod), runner: hoas(f), name: f.name}
 }
 
 function destruct(scr: Term, f: F, ty?: Term): destruct{
-  let A = scr.ty
-  if (A.$ != "STRUCT") raise(`Expected STRUCT type for destruct scrutinee, got: ${fmt(A)}`)
-  let vs = A.srcs.map((x, i) => sym(i, x()))
+  let A =asTag( scr.ty, "STRUCT")
+  let vs = fillStruct({c: 0}, A)
   return {$: "destruct", ty: ty ?? f(...vs).ty, scr, runner: f}
 }
 
@@ -332,6 +342,20 @@ function match(scr: Term, srcs: F[], ty?: Term): match{
   return { $: "match", ty, scr, srcs }
 }
 
+function EQ(L: Term, R: Term, ty?: Term): EQ{
+  return { $: "EQ", ty: ty ?? Type, L, R }
+}
+
+function eq(src: Term): eq{
+  return { $: "eq", ty: EQ(src, src)}
+}
+
+function RW(scr: Term, eq: Term, P: F): RW{
+  if (eq.ty.$ != "EQ") raise("expected equality")
+  let ty = P(eq.ty.R)
+  return { $: "RW", ty, scr, eq, P }
+}
+
 function rejec(term: Term){
   try{ check(term) }
   catch(e){ return }
@@ -340,7 +364,7 @@ function rejec(term: Term){
 
 function show(...t: (Term | string)[]) { console.log(t.map(x=> typeof x == "string" ? x : fmt(x)).join(" "))}
 
-let NULL = STRUCT()
+let NULL = TUPLE()
 NULL.name = "NULL"
 let BOOL = CHOICE([NULL, NULL], "BOOL")
 let Null = struct(NULL, )
@@ -358,7 +382,8 @@ check(BOOL)
 rejec({...BOOL, ty: NULL})
 rejec({...BOOL, ty: BOOL})
 
-check(lam((x,y)=>x, [BOOL, NULL], BOOL))
+
+
 rejec(lam((x,y)=>x, [BOOL, NULL], NULL))
 rejec(lam((x,y)=>y, [BOOL, NULL], BOOL))
 
@@ -388,6 +413,21 @@ show(TF)
 show(TF.ty)
 check(TF)
 
+
+
+check(struct(STRUCT(()=> [BOOL]), True))
+rejec(struct(STRUCT(()=> [BOOL]), Null))
+
+
+check(struct(TUPLE(BOOL), True))
+rejec(struct(TUPLE(BOOL), Null))
+
+
+let SIG = STRUCT((x, y)=>[BOOL, match(x,[()=> BOOL, ()=> NULL])])
+check(struct(SIG, True, True))
+rejec(struct(SIG, True, Null))
+rejec(struct(SIG, False, True))
+check(struct(SIG, False, Null))
 
 checkEQ(match(True, [x=>True, x=>False]), True)
 checkEQ(match(True, [x=>x, x=>False]), Null)
@@ -419,4 +459,62 @@ rejec(lam(x=>match(True, [()=> True, ()=> Null], app(TF, [x])), [BOOL], x=> app(
 rejec(lam(x=>match(x, [()=> True, ()=> Null], app(TF, [True])), [BOOL], x=> app(TF, [x])))
 rejec(lam(x=>match(x, [()=> True, ()=> Null], app(TF, [x])), [BOOL], x=> app(TF, [True])))
 
+check(EQ(True, True))
 
+check(lam(
+  (a,b,c)=>lam(
+    (h1,h2)=> RW(h1, h2, x=> EQ(a,x)),
+    [EQ(a,b), EQ(b,c)],
+    EQ(a,c)
+  ), [BOOL, BOOL, BOOL]
+))
+
+show(lam(
+  (a,b,c)=>lam(
+    (h1,h2)=> RW(h1, h2, x=> EQ(a,x)),
+    [EQ(a,b), EQ(b,c)],
+    EQ(a,c)
+  ), [BOOL, BOOL, BOOL]
+))
+
+
+show(lam(
+  (a,b,c)=>lam(
+    (h1,h2)=> RW(h1, h2, x=> EQ(a,x)),
+    [EQ(a,b), EQ(b,c)],
+    EQ(a,c)
+  ),
+  [BOOL, BOOL, BOOL ]
+).ty)
+
+
+rejec(lam(
+  (a,b,c)=>lam(
+    (h1,h2)=> RW(h1, h2, x=> EQ(a,x) ),
+    [EQ(a,b), EQ(b,c)],
+    EQ(a,b)
+  ),
+  [BOOL, BOOL, BOOL]
+))
+
+rejec(lam(
+  (a,b,c)=>lam(
+    (h1,h2)=> RW(h1, h2, x=> EQ(a,x)),
+    [EQ(a,b), EQ(a,c)],
+    EQ(a,c)
+  ), [BOOL, BOOL, BOOL]
+))
+
+let Nat = {} as CHOICE
+Object.assign(Nat, CHOICE([Nat, Null], "Nat"))
+
+show(Nat)
+
+check(Nat)
+
+
+let recf = {} as destruct
+Object.assign(recf, lam( x=> app(recf, [x]), [Nat], Nat))
+recf.name = "recf"
+
+// rejec(recf)
