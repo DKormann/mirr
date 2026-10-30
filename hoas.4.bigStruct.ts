@@ -11,10 +11,7 @@ type match    = { ty: Term, $: "match",    name?: string, scr: Term, srcs: F[] }
 type APP      = { ty: Term, $: "APP",      name?: string, fn: Term, args: Term[] }
 type Lam      = { ty: Term, $: "Lam",      name?: string, fn: F}
 
-
 type SYM      = { ty: Term, $: "SYM",      name?: string, n: number | string }
-
-
 type Term = Type | Arrow | ADT | adt | match | APP | Lam | SYM
 
 
@@ -45,8 +42,6 @@ let fillSign = (sctr : {c: number}, s: Sign): SYM[] => {
   if (s.names) zip(vs.slice(0, s.names.length), s.names, (v, n) => v.n = n || v.n)
   if (typeof s == "function") zip(vs, argnames(s as any), (v, n)=> v.n = n || v.n)
   let tys = s.f(...vs)
-
-  
 
   vs.push(...symlist(sctr, tys.length - vs.length))
   while(vs.some(v => v.ty == Hole)){
@@ -83,6 +78,7 @@ function fmt(t: Term){
     }
 
     if (t == Hole) return '_'
+    if (t == rfl) return 'rfl'
     if (t.$ == "Type") return 'Type'
     if (t.$ == "ADT") return  t.variants.map(v=> `\n  | {${gosig(v)}}`).join('') 
 
@@ -103,6 +99,7 @@ function fmt(t: Term){
       }
       return `${t.fn.toString()}`
     }
+
 
     return t
 
@@ -148,11 +145,6 @@ function checkEQ(a: Term, b: Term){
 
   if (a.$ != b.$) raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
   if (a.$ == "SYM") if (a!=b) raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
-  // if (a.$ == "EQ"){
-  //   b = b as EQ
-  //   checkEQ(a.L, b.L)
-  //   checkEQ(a.R, b.R)
-  // }
   if (a.$ == "ADT"){
     zip(a.variants, (b as ADT).variants, (v1, v2)=>{
       let vs = fillSign({c:0}, v1)
@@ -193,16 +185,17 @@ function asTag <$ extends Term["$"]>(t: Term, tag: $) : Term & {$: $}{
 
 let EQ = Lam((T, a, b)=>[
   () => [Type, T, T, Type],
-  () => Arrow((P, h) => [ Arrow((x)=> [T, Type]), app(P, a), app(P, b)])
+  () => Arrow((P, h) => [ Arrow((x)=> [T, Type]), $(P, a), $(P, b)])
 ])
+
 
 EQ.name = "EQ"
 
 
 let rfl = Lam((T, x) => [
-  () => [Type, T, app(EQ, T, x, x)],
+  () => [Type, T, $(EQ, T, x, x)],
   () => Lam((e, P, h) => [ () => [], () => h ]) ])
-
+rfl.name = "rfl"
 
 function check(t:Term){
 
@@ -338,7 +331,7 @@ function Lam(def: (...args: Term[]) => [ ()=>Term[], ()=>Term]) : Lam{
 
   function T(...x: Term[]) {
     let res = def(...x)[0]()
-    if (res.length != x.length + 1) raise(`Unexpected result length: expected ${x.length + 1}, got ${res.length}`)
+    if (res.length != x.length + 1) raise(`Unexpected result length: expected ${x.length + 1}, got ${res.length}\nin function:${def.toString()}`)
     return res
   }
 
@@ -352,14 +345,14 @@ function Lam(def: (...args: Term[]) => [ ()=>Term[], ()=>Term]) : Lam{
 }
 
 
-function app(fn: Term, ...args: Term[]): APP{
+function $(fn: Term, ...args: Term[]): APP{
   let ty = fn.ty == Hole ? Hole : asTag(fn.ty, "Arrow").COD(...args)
   return { $: "APP", ty, fn, args }
 }
 
 function match(scr: Term, srcs: F[], ty?: Term): match{
-  let A = scr.ty.$ == "ADT" ? fillSign({c:0}, scr.ty.variants[0]) : []
-  ty ??= srcs[0](...A).ty
+
+  ty ??= srcs[0](...(scr.ty.$ == "ADT" ? fillSign({c:0}, scr.ty.variants[0]) : [])).ty
   return { $: "match", ty, scr, srcs }
 }
 
@@ -430,63 +423,80 @@ show(TF)
 check(TF)
 
 
-check(Lam(b=> [()=> [BOOL, app(TF, b)], ()=> match(b, [_=>Null, _=>True], app(TF, b))]))
-rejec(Lam(b=> [()=> [BOOL, app(TF, b)], ()=> match(b, [_=>Null, _=>Null], app(TF, b))]))
-rejec(Lam(b=> [()=> [BOOL, app(TF, b)], ()=> match(b, [_=>True, _=>True], app(TF, b))]))
+check(Lam(b=> [()=> [BOOL, $(TF, b)], ()=> match(b, [_=>Null, _=>True], $(TF, b))]))
+rejec(Lam(b=> [()=> [BOOL, $(TF, b)], ()=> match(b, [_=>Null, _=>Null], $(TF, b))]))
+rejec(Lam(b=> [()=> [BOOL, $(TF, b)], ()=> match(b, [_=>True, _=>True], $(TF, b))]))
 
 
 let p1 = Lam((T,a,b,eq,P,h)=>[
-  () => [Type, T, T, app(EQ, T, a, b), Arrow(T=>[T,Type]), app(P, a), app(P, b)],
-  () => app(eq, P, h)
+  () => [Type, T, T, $(EQ, T, a, b), Arrow(T=>[T,Type]), $(P, a), $(P, b)],
+  () => $(eq, P, h)
 ])
 
 check(p1)
 
 rejec(Lam((T,a,b,e,P,h)=>[
-  () => [Type, T, T, app(EQ, T, a, a), Arrow(T=>[T,Type]), app(P, a), app(P, b)],
-  () => app(e, P, h)
+  () => [Type, T, T, $(EQ, T, a, a), Arrow(T=>[T,Type]), $(P, a), $(P, b)],
+  () => $(e, P, h)
 ]))
 
 rejec(Lam((T,a,b,e,P,h)=>[
-  () => [Type, T, T, app(EQ, T, a, b), Arrow(T=>[T,Type]), app(P, a), app(P, a)],
-  () => app(e, P, h)
+  () => [Type, T, T, $(EQ, T, a, b), Arrow(T=>[T,Type]), $(P, a), $(P, a)],
+  () => $(e, P, h)
 ]))
 
 rejec(Lam((T,a,b,e,P,h)=>[
-  () => [Type, T, T, app(EQ, T, a, b), Arrow(T=>[T,Type]), app(P, a), app(P, b)],
-  () => app(a, P, h)
+  () => [Type, T, T, $(EQ, T, a, b), Arrow(T=>[T,Type]), $(P, a), $(P, b)],
+  () => $(a, P, h)
 ]))
 
 
-let EQ_trans = Lam((T, a, b, c, eq_ab, eq_bc) => [
-  () => [
-    Type,
-    T,T,T,
-    app(EQ, T, a, b),
-    app(EQ, T, b, c),
-    app(EQ, T, a, c),
-  ],
-  () => app(
-    eq_bc,
-    Lam(x=> [
-      ()=> [T, Type],
-      ()=> app(EQ, T, a, x)
-    ]),
-    eq_ab
-  )
-])
+
+let EQ_trans = Lam((T, a, b, c, eq_ab, eq_bc) =>{
+  let EQT: F = (x,y) => $(EQ, T, x, y)
+  let P = Lam(x=> [ ()=> [T, Type], ()=> EQT(a, x) ])
+  return [
+    () => [ Type, T,T,T, EQT(a, b), EQT(b, c), EQT(a, c) ],
+    () => $( eq_bc, P, eq_ab )
+  ]
+})
 
 
 show(EQ_trans)
-
 check(EQ_trans)
 
-// let Nat = ENUM([], [])
-// Object.assign(Nat, ENUM([Nat], []))
-// Nat.name = "Nat"
-
-// show(Nat)
-// check(Nat)
+let Nat = ENUM([], [])
+Object.assign(Nat, ENUM([Nat], []))
+Nat.name = "Nat"
+show(Nat)
 
 
+let Zero = adt(Nat, 0)
+Zero.name = "Zero"
+let Succ = Lam(n=> [()=> [Nat, Nat], ()=> adt(Nat, 1, n)])
+Succ.name = "Succ"
+show(Succ)
 
+let One = $(Succ, Zero)
+One.name = "One"
+show(One)
+
+let EMPTY = ADT([], "EMPTY")
+show(EMPTY)
+
+let exfN = Lam(x=> [()=> [EMPTY, Nat], ()=> match(x, [], Nat)])
+check(exfN)
+
+let z0_transport = Lam(n => [
+  () => [Nat, Type],
+  () => match(n, [_ => NULL, _ => EMPTY])
+])
+
+check(z0_transport)
+
+let eq10_to_empty = Lam(h => [
+  () => [ $(EQ, Nat, Zero, One), EMPTY ],
+  () => $( h, z0_transport, Null )
+])
+
+check(eq10_to_empty)
