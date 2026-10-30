@@ -1,27 +1,26 @@
-type F = (...t: Term[]) => Term
+type F        = ((...t: Term[]) => Term)
+type Sign     = {names?: string[], length: number, f: (...t:Term[]) => Term[]}
 
 type Type     = { ty: Term, $: "Type",     name?: string }
+type Arrow    = { ty: Term, $: "Arrow",    name?: string, DOM: Sign, COD: F }
 
-type Arrow    = { ty: Term, $: "Arrow",    name?: string, DOM: Term, COD: F }
-type STRUCT   = { ty: Term, $: "STRUCT",   name?: string, size: number, SRC: (...t:Term[]) => Term[]}
-type CHOICE   = { ty: Term, $: "CHOICE",   name?: string, srcs: Term[] }
-type EQ       = { ty: Term, $: "EQ",       name?: string, L: Term, R: Term }
+type ADT      = { ty: Term, $: "ADT",      name?: string, variants:  Sign[]}
+type adt      = { ty: Term, $: "adt",      name?: string, tag: number, srcs: Term[] }
 
-type struct   = { ty: Term, $: "struct",   name?: string, srcs: Term[] }
-type choice   = { ty: Term, $: "choice",   name?: string, tag: number, src: Term }
-type eq       = { ty: Term, $: "eq",       name?: string }
-
-type destruct = { ty: Term, $: "destruct", name?: string, scr?: Term, runner: F }
 type match    = { ty: Term, $: "match",    name?: string, scr: Term, srcs: F[] }
-type RW       = { ty: Term, $: "RW",       name?: string, scr: Term, eq: Term, P: F }
-
-type APP      = { ty: Term, $: "APP",      name?: string, fn: Term, arg:Term }
-type SYM      = { ty: Term, $: "SYM",      name?: string, n: number }
+type APP      = { ty: Term, $: "APP",      name?: string, fn: Term, args: Term[] }
+type Lam      = { ty: Term, $: "Lam",      name?: string, fn: F}
 
 
-type Term = Type | Arrow | STRUCT | CHOICE | struct | choice | destruct | match | APP | SYM | EQ | eq | RW
+type SYM      = { ty: Term, $: "SYM",      name?: string, n: number | string }
 
-const Type = {$: "Type"} as Type
+
+type Term = Type | Arrow | ADT | adt | match | APP | Lam | SYM
+
+
+let Hole = {} as Term
+
+const Type : Term = {$: "Type" ,ty: Hole}
 Type.ty = Type
 
 function raise(msg: string): never {
@@ -29,15 +28,43 @@ function raise(msg: string): never {
 }
 const seen = new Set<Term | F>()
 
-function zip<T,S,U>(ts: T[], s: S[], f: (t: T, s: S)=>U): U[] {
-  if (ts.length !== s.length) throw new Error("zip: arrays must have the same length")
-  return ts.map((t, i) => f(t, s[i]))
+
+
+function zip<T,S,U>(ts: T[], s: S[], f: (t: T, s: S, i: number)=>U): U[] {
+  if (ts.length !== s.length) throw new Error(`zip: arrays must have the same length, got ${ts.length} and ${s.length}`)
+  return ts.map((t, i) => f(t, s[i], i))
 }
 
-let fillStruct = (sctr : {c: number}, s: STRUCT): SYM[] => {
-  let vs = Array.from({length: s.size}, (_, i) => sym(sctr.c++, {} as Term))
-  return zip(s.SRC(...vs), vs, (ty, v)=> Object.assign(v, {ty}))
+
+let symlist = (ctr: {c:number} , n: number, ty? :Term) => Array.from({length: n}, (_, i) => sym(ctr.c++, ty ?? Hole))
+
+
+let fillSign = (sctr : {c: number}, s: Sign): SYM[] => {
+  let vs = symlist(sctr, s.length)
+
+  if (s.names) zip(vs.slice(0, s.names.length), s.names, (v, n) => v.n = n || v.n)
+  if (typeof s == "function") zip(vs, argnames(s as any), (v, n)=> v.n = n || v.n)
+  let tys = s.f(...vs)
+
+  
+
+  vs.push(...symlist(sctr, tys.length - vs.length))
+  while(vs.some(v => v.ty == Hole)){
+
+    zip(tys, vs, (ty, v)=> Object.assign(v, {ty}))
+  }
+  return vs
 }
+
+
+let argnames = (f: Function) =>{
+  let s = f.toString()
+  let match = s.match(/\(([^)]*)\)/)
+  if (!match) return []
+  return match[1].split(',').map(x => x.trim()).slice(0, f.length)
+}
+
+
 
 function fmt(t: Term){
 
@@ -45,68 +72,40 @@ function fmt(t: Term){
 
   function go(t:Term ):string{
 
-    function gofn(f: F, args: STRUCT): string{
-      let s = fillStruct(scounter, args)
-      return `{${s.map(v => pln(v)).join(', ')}} => ${pln(f(...s))}`
+    function gofn(f: F, argty?:Term): string{
+
+      let s = symlist(scounter, f.length, argty)
+      return `({${s.map(v => pln(v)).join(', ')}}) => ${pln(f(...s))}`
     }
 
+    function gosig(s: Sign): string{
+      return fillSign(scounter, s).map(v => pln(v)+": "+ pln(v.ty)).join(', ')
+    }
+
+    if (t == Hole) return '_'
     if (t.$ == "Type") return 'Type'
+    if (t.$ == "ADT") return  t.variants.map(v=> `\n  | {${gosig(v)}}`).join('') 
 
-    if (t.$ == "Arrow") {
-      let dom = t.DOM
-      let cod = t.COD
+    if (t.$ == "adt") return `#${t.tag}(${t.srcs.map(x=> pln(x)).join(', ')})`
 
-      let v = sym(scounter.c++, dom)
-      let bod = cod(v)
-      return `(${pln(v)} : ${pln(dom)}) -> ${pln(bod)}`
+    if (t.$ == "APP") return `${pln(t.fn)}(${ t.args.map(x => pln(x)).join(', ')})`
+    if (t.$ == "Arrow"){
+      let vs = fillSign(scounter, t.DOM)
+      return `(${vs.map(v => `${pln(v)} : ${pln(v.ty)}`).join(', ')}) -> ${pln(t.COD(...vs))}`
     }
-    if (t.$ == "STRUCT"){
-      let vs = fillStruct(scounter, t)
-      return `{${vs.map(v => `x${v.n} : ${pln(v.ty)}`).join(', ')}}`
-    }
-
-    if (t.$ == "CHOICE"){
-      return `(${t.srcs.map(o => pln(o)).join(' | ')})`
-    }
-
-    if (t.$ == "choice"){
-      return `(#${t.tag}: ${pln(t.src)}) : ${pln(t.ty)}`
+  
+    if (t.$ == "SYM") return typeof t.n == "number" ? `x${t.n}` : t.n
+    if (t.$ == "match") return `match ${pln(t.scr)}:${t.srcs.map(x=> `\n  | ${gofn(x, )}`).join('')}`
+    if (t.$ == "Lam") {
+      if (t.ty.$ == "Arrow"){
+        let syms = fillSign(scounter, t.ty.DOM)
+        return `(${syms.map(v => `${pln(v)} : ${pln(v.ty)}`).join(', ')}):${pln(t.ty.COD(...syms))} => ${pln(t.fn(...syms))}`
+      }
+      return `${t.fn.toString()}`
     }
 
-    if (t.$ == "struct"){
-      return `{${t.srcs.map(f => pln(f)).join(', ')}}`
-    }
-    if (t.$ == "SYM") {
-      return `x${t.n}`
-    }
-    if (t.$ == "APP"){
-      return `${pln(t.fn)}(${ pln(t.arg)})`
-    }
+    return t
 
-    if (t.$ == "destruct"){
-      let A :STRUCT = (t.scr?.ty ?? (t.ty.$ == "Arrow" ? t.ty.DOM : raise("cant infer"))) as STRUCT
-      return `(${t.scr? pln(t.scr) + ': ' : ''}${gofn(t.runner, A)})`
-    }
-    if (t.$ == "match"){
-      let x = sym(scounter.c++, Type)
-      return `match ${pln(t.scr)}: ${t.srcs.map((f, i)=> `#${i}(${pln(x)}) => ${pln(f(x))}`).join(" ")}`
-    }
-
-    if (t.$ == "EQ"){
-      return `(${pln(t.L)} == ${pln(t.R)})`
-    }
-
-    if (t.$ == "eq"){
-      return `{==}`
-    }
-
-    if (t.$ == "RW"){
-      return `${pln(t.scr)} % ${pln(t.eq)}`
-    }
-
-    console.error(t)
-    raise(`Unknown term`)
-    
   }
 
   let defs:string[] = []
@@ -128,29 +127,16 @@ function fmt(t: Term){
 
 }
 
-function whnf(t:Term): Term{
+function run(t:Term): Term{
+  if (t.$ == undefined) return t
 
-  if (t.$ == "match"){
-    let scr = whnf(t.scr)
-    if (scr.$ == "choice"){
-      return(t.srcs[scr.tag](scr.src))
-    }
-  }
   if (t.$ == "APP"){
-    let f = whnf(t.fn)
-    if (f.$ == "match"){
-      let a = whnf(t.arg)
-      if (a.$ == "choice") return whnf(f.srcs[a.tag](a.src))
-    }
-    if (f.$ == "destruct"){
-      if (f.scr != undefined) raise(`Cannot apply destruct with a non-undefined scr in this context`)
-      return whnf({...f, scr: t.arg})
-    }
+    let fn = run(t.fn)
+    if (fn.$ == "Lam") return run(fn.fn(...t.args))
   }
-
-  if (t.$ == "destruct" && t.scr){
-    let scr = whnf(t.scr)
-    if (scr.$ == "struct") return whnf(t.runner(...scr.srcs))
+  if (t.$ == "match"){
+    let arg = run(t.scr)
+    if (arg.$ == "adt") return run(t.srcs[arg.tag](...arg.srcs))
   }
   
   return t
@@ -158,40 +144,65 @@ function whnf(t:Term): Term{
 
 function checkEQ(a: Term, b: Term){
   if (a == b) return
-  [a,b] = [whnf(a), whnf(b)]
+  [a,b] = [run(a), run(b)]
 
   if (a.$ != b.$) raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
   if (a.$ == "SYM") if (a!=b) raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
-  if (a.$ == "STRUCT"){
-    let vs = fillStruct({c: 0}, a);
-    zip((b as STRUCT).SRC(...vs), vs, (s, v)=> checkEQ(v.ty, s))
+  // if (a.$ == "EQ"){
+  //   b = b as EQ
+  //   checkEQ(a.L, b.L)
+  //   checkEQ(a.R, b.R)
+  // }
+  if (a.$ == "ADT"){
+    zip(a.variants, (b as ADT).variants, (v1, v2)=>{
+      let vs = fillSign({c:0}, v1)
+      zip(v1.f(...vs), v2.f(...vs), (a,b)=> checkEQ(a,b))
+    })
   }
-  if (a.$ == "EQ"){
-    b = b as EQ
-    checkEQ(a.L, b.L)
-    checkEQ(a.R, b.R)
+  if (a.$ == "adt"){
+    if (a.tag != (b as adt).tag) raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
+    zip(a.srcs, (b as adt).srcs, (x, y)=> checkEQ(x, y))
+  }
+  if (a.$ == "APP"){
+    checkEQ(a.fn, (b as APP).fn)
+    zip(a.args, (b as APP).args, (x, y)=> checkEQ(x, y))
   }
 }
 
 function wellFounded(A: Term, a: Term):boolean{
   if (A.$ != a.$) return false
   if (A == a) return false 
-  if (A.$ == "struct" && a.$ == "struct"){
-    for (let i = 0; i < A.srcs.length; i++){
-      if (A.srcs[i] == a || wellFounded(A.srcs[i], a.srcs[i])) return true
-    }
-  }
-  if (A.$ == "choice" && a.$ == "choice"){
-    if (A.src == a || wellFounded(A.src, a.src)) return true
-  }
+  // if (A.$ == "struct" && a.$ == "struct"){
+  //   for (let i = 0; i < A.srcs.length; i++){
+  //     if (A.srcs[i] == a || wellFounded(A.srcs[i], a.srcs[i])) return true
+  //   }
+  // }
+  // if (A.$ == "choice" && a.$ == "choice"){
+  //   if (A.src == a || wellFounded(A.src, a.src)) return true
+  // }
   return false
 }
 
 
 function asTag <$ extends Term["$"]>(t: Term, tag: $) : Term & {$: $}{
-  if (t.$ != tag) raise(`Expected tag ${tag}, got ${t.$}`)
+  t = run(t)
+  if (t.$ != tag) raise(`Expected tag ${tag}, got ${t.$} in term ${fmt(t)}`)
   return t as Term & {$: $}
 }
+
+
+let EQ = Lam((T, a, b)=>[
+  () => [Type, T, T, Type],
+  () => Arrow((P, h) => [ Arrow((x)=> [T, Type]), app(P, a), app(P, b)])
+])
+
+EQ.name = "EQ"
+
+
+let rfl = Lam((T, x) => [
+  () => [Type, T, app(EQ, T, x, x)],
+  () => Lam((e, P, h) => [ () => [], () => h ]) ])
+
 
 function check(t:Term){
 
@@ -206,155 +217,158 @@ function check(t:Term){
 
 
   function go(t:Term, cs: CallStack, ty?:Term) :Term{
+
+    if(t == rfl) return t
+
+    function checkSig(args: Term[], sig: Sign){
+
+      let A = sig.f(...args)
+      zip(A, args, (a,t)=> go(t, cs, a))
+    }
+
     if (ty) checkEQ(t.ty, ty)
-    if (seen.has(t)) return t
+
+    function searchStack(c: CallStack, t: Term){
+      c = cs
+      while (c){
+        if (c.f == t) return c
+        c = c.prev
+      } 
+    }
+
     seen.add(t)
-    const type = whnf(t.ty)
+    const type = run(t.ty)
 
     switch(t.$){
-      case "struct":{
-        zip(t.srcs, asTag(type, "STRUCT").SRC(...t.srcs) , go)
-        return t
-      }
-      case "destruct":{
-        if (t.scr){
-          go(t.runner(...fillStruct(symCounter, asTag(t.scr.ty, "STRUCT"))), type)
-        }else{
-          let {DOM, COD} = asTag(type, "Arrow")
-          let vs = fillStruct(symCounter, asTag(DOM, "STRUCT"))
-          go(t.runner(...vs), COD(...vs))
-        }
-        return t
-      }
-      case "choice":{
-        let srcs = asTag(type, "CHOICE").srcs
-        if (t.tag >= srcs.length) raise(`Invalid tag for choic: ${t.tag}`)
-        go(t.src, srcs[t.tag])
-        return t
-      }
+
       case "match":{
-        let A = asTag(t.scr.ty, "CHOICE")
-        asTag(t.scr, "SYM")
-        let old = {...t.scr}
-        t.srcs.forEach((f, i) => go(f(Object.assign(t.scr, choice(A, i, sym(i, A.srcs[i]))).src) ,type))
-        Object.assign(t.scr, old)
-        return t
+
+        let arg = asTag(t.scr, "SYM")
+        let T = asTag(arg.ty, "ADT")
+        let old : SYM = {...arg}
+        zip(T.variants, t.srcs, (v, s, i)=>{
+          let vs = fillSign(symCounter, v)
+          Object.assign(arg, adt(T, i, ...vs))
+
+          go(s(...vs), cs, type)
+        })
+        Object.assign(arg, old)
+        break
       }
-      case "EQ":case "CHOICE":case "STRUCT":case "Type":case "Arrow":{
-        asTag(type, "Type")
-        return t
+
+      case "SYM":{
+        break
       }
+
+      case "adt":{
+        checkSig(t.srcs, asTag(type, "ADT").variants[t.tag])
+        break
+      }
+
+      case "Lam":{
+        let aro = asTag(t.ty, "Arrow")
+        let vs = fillSign(symCounter, aro.DOM)
+        go(t.fn(...vs), cs, aro.COD(...vs))
+        break
+      }
+      
       case "APP":{
         let aro = asTag(t.fn.ty, "Arrow")
-        checkEQ(type, aro.COD(t.arg))
-        go(t.fn)
-        go(t.arg, aro.DOM)
-        return t
+        checkSig(t.args, aro.DOM)
+        checkEQ(type, aro.COD(...t.args))
+        go(t.fn, cs, aro)
+        break
       }
-      case "eq":{
-        let ty = asTag(type, "EQ")
-        checkEQ(ty.L, ty.R)
-        return t
-      }
-      case "RW":{
-        let et = asTag(t.eq.ty, "EQ")
-        checkEQ(t.P(et.R), type)
-        go(t.scr, t.P(et.L))
-        go(t.eq)
-        return t
-      }
+
     }
     return t
   }
 
-  go(t)
+  go(t, null)
 
 }
 
 /**
  * 
- *  SURFACE LEVEL SYNTAX PARSING AND TESTING
+ *  CONSTRUCTOR HELPERS
  *
  */
 
-type ft = F | Term
+type FT = F | Term
 
-function hoas(f: ft): F {
+function hoas(f: FT): F {
   return typeof f == "function" ? f : () => f
 }
 
-function Arrow(DOM: Term, cod: ft): Arrow{
-  return { $: "Arrow", ty: Type, DOM, COD: hoas(cod) }
+function Arrow(Ts: (...x: Term[]) => Term[]): Arrow{
+  let names = argnames(Ts)
+  let tys = Ts(...symlist({c:0}, Ts.length))
+  let length = tys.length - 1
+  let DOM :Sign = {names, length, f: (...x: Term[]) => Ts(...x).slice(0,length)}
+  let COD = (...x: Term[]) => Ts(...x)[length]
+  return {$: "Arrow", ty: Type, DOM, COD }
 }
 
-function CHOICE(cases: Term[], name?:string):CHOICE{
-  return { $: "CHOICE", ty: Type, srcs: cases, name }
+function ADT(variants: Sign[], name?: string): ADT{
+  return { $: "ADT", ty: Type, variants, name }
 }
 
-function STRUCT(SRC: (...t:Term[])=> Term[], size?: number): STRUCT{
-  return { $: "STRUCT", ty: Type, size: size ?? SRC.length, SRC }
+function adt(ty: Term, tag: number, ...srcs: Term[]): adt{
+  return { $: "adt", ty, tag, srcs }
 }
 
-function struct(ty: Term, ...srcs: Term[]): struct{
-  return { $: "struct", ty, srcs }
+function Sigma(sig: Sign): ADT{ return ADT([sig])}
+function TUPLE(...srcs: Term[]): ADT{ return ENUM(srcs)}
+
+function ENUM(...cases: Term[][]): ADT{
+  return ADT(cases.map(c => ({length: c.length, f: (...x: Term[]) => c } ) ))
 }
 
-function TUPLE(...srcs: Term[]): STRUCT{
-  return STRUCT(()=> srcs, srcs.length)
-}
-
-function tuple(...srcs: Term[]): struct{
-  return { $: "struct", ty: TUPLE(...srcs.map(x=>x.ty)), srcs }
+function tuple(...srcs: Term[]): adt{
+  return adt(TUPLE(...srcs.map(x=>x.ty)), 0, ...srcs)
 }
 
 function sym(n: number, ty: Term) :SYM {
   return { $: "SYM", n, ty }
 }
 
-function lam( f: (...x:Term[])=>Term, dom:STRUCT | Term[], cod?:Term | F): destruct  & {ty: Arrow}{
+function Lam(def: (...args: Term[]) => [ ()=>Term[], ()=>Term]) : Lam{
 
-  if (Array.isArray(dom)) dom = TUPLE(...dom)
-  if (dom.$ != "STRUCT") raise(`Expected STRUCT type for domain, got: ${fmt(dom)}`)
-  cod ??= f(...fillStruct({c: 0}, dom)).ty
-  return { $: "destruct", ty: Arrow(dom, cod), runner: hoas(f), name: f.name}
+  let names = argnames(def)
+
+  function T(...x: Term[]) {
+    let res = def(...x)[0]()
+    if (res.length != x.length + 1) raise(`Unexpected result length: expected ${x.length + 1}, got ${res.length}`)
+    return res
+  }
+
+  let ty: Arrow = {
+    $: "Arrow",
+    ty: Type,
+    DOM: {names, length: names.length, f: (...x: Term[]) => T(...x).slice(0,-1) },
+    COD: (...x: Term[]) => T(...x)[names.length],
+  }
+  return {$: "Lam" , ty, fn: (...x:Term[]) => def(...x)[1]()}
 }
 
-function destruct(scr: Term, f: F, ty?: Term): destruct{
-  let A =asTag( scr.ty, "STRUCT")
-  let vs = fillStruct({c: 0}, A)
-  return {$: "destruct", ty: ty ?? f(...vs).ty, scr, runner: f}
-}
 
-function app(fn: Term, arg: Term | Term[]): APP{
-  if (Array.isArray(arg)) arg = tuple(...arg)
-  let F = fn.ty
-  if (F.$ != "Arrow") raise(`Expected Arrow type for function application, got: ${fmt(F)}`)
-  return { $: "APP", ty: F.COD(arg), fn, arg }
-}
-
-function choice(ty: Term, tag:number, src: Term): choice{
-  return { $: "choice", ty, tag, src }
+function app(fn: Term, ...args: Term[]): APP{
+  let ty = fn.ty == Hole ? Hole : asTag(fn.ty, "Arrow").COD(...args)
+  return { $: "APP", ty, fn, args }
 }
 
 function match(scr: Term, srcs: F[], ty?: Term): match{
-  let A = whnf(scr.ty)
-  ty ??= (A.$ == "CHOICE") ? srcs[0](sym(0, A.srcs[0])).ty : raise(`Cannot infer type for match, scrutinee is not CHOICE: ${fmt(A)}`)
+  let A = scr.ty.$ == "ADT" ? fillSign({c:0}, scr.ty.variants[0]) : []
+  ty ??= srcs[0](...A).ty
   return { $: "match", ty, scr, srcs }
 }
 
-function EQ(L: Term, R: Term, ty?: Term): EQ{
-  return { $: "EQ", ty: ty ?? Type, L, R }
-}
 
-function eq(src: Term): eq{
-  return { $: "eq", ty: EQ(src, src)}
-}
-
-function RW(scr: Term, eq: Term, P: F): RW{
-  if (eq.ty.$ != "EQ") raise("expected equality")
-  let ty = P(eq.ty.R)
-  return { $: "RW", ty, scr, eq, P }
-}
+/**
+ * 
+ *  TESTING
+ *
+ */
 
 function rejec(term: Term){
   try{ check(term) }
@@ -362,159 +376,117 @@ function rejec(term: Term){
   throw new Error(`Term accepted: ${fmt(term)}`)
 }
 
-function show(...t: (Term | string)[]) { console.log(t.map(x=> typeof x == "string" ? x : fmt(x)).join(" "))}
+function show(...t: (Term | string| number)[]) { console.log(t.map(x=> typeof x == "string" || typeof x == "number" ? x : fmt(x)).join(" "))}
+
 
 let NULL = TUPLE()
 NULL.name = "NULL"
-let BOOL = CHOICE([NULL, NULL], "BOOL")
-let Null = struct(NULL, )
+show(NULL)
+
+let Null = adt(NULL, 0)
 Null.name = "Null"
-let True = choice(BOOL, 0, Null)
+
+let BOOL = ENUM([], [])
+BOOL.name = "BOOL"
+show(BOOL)
+let True = adt(BOOL, 1)
 True.name = "True"
-let False = choice(BOOL, 1, Null)
+let False = adt(BOOL, 0)
 False.name = "False"
-show (True)
 
+show(True)
 check(True)
-rejec({...True, ty: NULL})
 
-check(BOOL)
-rejec({...BOOL, ty: NULL})
-rejec({...BOOL, ty: BOOL})
+check(Lam(x=> [()=> [BOOL, BOOL], ()=> x ]))
+rejec(Lam(x=> [()=> [BOOL, NULL], ()=> x ]))
 
 
 
-rejec(lam((x,y)=>x, [BOOL, NULL], NULL))
-rejec(lam((x,y)=>y, [BOOL, NULL], BOOL))
+check(match(sym(0, BOOL), [x=>True, x=>False]))
+rejec(match(sym(0, BOOL), [x=>True, x=>Null]))
 
 
-check(app(lam(x=>x, [BOOL]), [True]))
-rejec({...app(lam(x=>x, [BOOL]), [True]), ty: NULL})
+check(Lam(x=> [()=> [BOOL, BOOL], ()=>match(x, [x=>True, x=>False])]))
+rejec(Lam(x=> [()=> [BOOL, NULL], ()=>match(x, [x=>True, x=>Null])]))
 
-check(app(lam((x,y)=>x, [BOOL, NULL]), [True, Null]))
-rejec({...app(lam((x,y)=>x, [BOOL, NULL]), [True, Null]), ty: NULL})
-rejec({...app(lam((x,y)=>y, [BOOL, NULL]), [True, Null]), ty: BOOL})
 
-let mt1 = lam(x=>match(x, [x=>x, x=>True]), [BOOL], BOOL)
 
-let s = sym(0, BOOL)
-let mt = match(s, [x=>False, x=>True])
+rejec(Lam(x=> [()=> [BOOL, NULL], ()=> match(x, [x=>True, x=>False])]))
+rejec(Lam(x=> [()=> [NULL, BOOL], ()=> match(x, [x=>True, x=>False])]))
+rejec(Lam(x=> [()=> [BOOL, BOOL], ()=> match(x, [x=>True, x=>Null])]))
+check(Lam(x=> [()=> [BOOL, BOOL], ()=> match(x, [x=>True, _=>x])]))
 
-check(lam(x=>match(x, [()=>False, ()=>True]), [BOOL], BOOL))
+rejec(Lam(x=> [()=> [BOOL], ()=> NULL ]))
 
-const BoN = CHOICE([BOOL, NULL], "BoN")
-check(lam(x=>match(x, [b=>b, n=>True]), [BoN], BOOL))
-rejec(lam(x=>match(x, [b=>b, n=>n]), [BoN], BOOL))
-rejec(lam(x=>match(x, [()=>BOOL, ()=>NULL], BOOL), [BOOL]))
+checkEQ(match(True, [x=>True, x=>False]), False)
 
-let TF = lam(x=>match(x, [()=>BOOL, () => NULL], Type), [BOOL])
+
+let TF = Lam(b=> [()=> [BOOL, Type], ()=> match(b, [x=>NULL, x=>BOOL])])
+TF.name = "TF"
+
+
 
 show(TF)
-show(TF.ty)
 check(TF)
 
 
-
-check(struct(STRUCT(()=> [BOOL]), True))
-rejec(struct(STRUCT(()=> [BOOL]), Null))
-
-
-check(struct(TUPLE(BOOL), True))
-rejec(struct(TUPLE(BOOL), Null))
+check(Lam(b=> [()=> [BOOL, app(TF, b)], ()=> match(b, [_=>Null, _=>True], app(TF, b))]))
+rejec(Lam(b=> [()=> [BOOL, app(TF, b)], ()=> match(b, [_=>Null, _=>Null], app(TF, b))]))
+rejec(Lam(b=> [()=> [BOOL, app(TF, b)], ()=> match(b, [_=>True, _=>True], app(TF, b))]))
 
 
-let SIG = STRUCT((x, y)=>[BOOL, match(x,[()=> BOOL, ()=> NULL])])
-check(struct(SIG, True, True))
-rejec(struct(SIG, True, Null))
-rejec(struct(SIG, False, True))
-check(struct(SIG, False, Null))
+let p1 = Lam((T,a,b,eq,P,h)=>[
+  () => [Type, T, T, app(EQ, T, a, b), Arrow(T=>[T,Type]), app(P, a), app(P, b)],
+  () => app(eq, P, h)
+])
 
-checkEQ(match(True, [x=>True, x=>False]), True)
-checkEQ(match(True, [x=>x, x=>False]), Null)
-checkEQ(match(False, [x=>True, x=>False]), False)
+check(p1)
 
-let Maybe = lam(x=>CHOICE([x, NULL]), [Type])
-Maybe.name = "Maybe"
-show(Maybe)
+rejec(Lam((T,a,b,e,P,h)=>[
+  () => [Type, T, T, app(EQ, T, a, a), Arrow(T=>[T,Type]), app(P, a), app(P, b)],
+  () => app(e, P, h)
+]))
 
-let MaybeBool = app(Maybe, [BOOL])
-let SomeTrue = choice(MaybeBool, 0, True)
+rejec(Lam((T,a,b,e,P,h)=>[
+  () => [Type, T, T, app(EQ, T, a, b), Arrow(T=>[T,Type]), app(P, a), app(P, a)],
+  () => app(e, P, h)
+]))
 
-show(SomeTrue)
-
-checkEQ(destruct(tuple(True), x=>x), True)
-checkEQ(destruct(tuple(True, False), (x,y)=>y), False)
-checkEQ(app(lam(x=>x, [BOOL]), [True]), True)
-checkEQ(MaybeBool, CHOICE([BOOL, NULL]))
-checkEQ(match(SomeTrue, [x=>x, x=>False]), True)
-checkEQ(app(TF, [True]), BOOL)
-
-let vb = sym(0, BOOL)
-check(match(vb, [()=> True, ()=> Null], app(TF, [vb])))
-
-check(lam(x=>match(x,    [()=> True, ()=> Null], app(TF, [x])), [BOOL], x=> app(TF, [x])))
-rejec(lam(x=>match(x,    [()=> Null, ()=> Null], app(TF, [x])), [BOOL], x=> app(TF, [x])))
-rejec(lam(x=>match(x,    [()=> True, ()=> True], app(TF, [x])), [BOOL], x=> app(TF, [x])))
-rejec(lam(x=>match(True, [()=> True, ()=> Null], app(TF, [x])), [BOOL], x=> app(TF, [x])))
-rejec(lam(x=>match(x, [()=> True, ()=> Null], app(TF, [True])), [BOOL], x=> app(TF, [x])))
-rejec(lam(x=>match(x, [()=> True, ()=> Null], app(TF, [x])), [BOOL], x=> app(TF, [True])))
-
-check(EQ(True, True))
-
-check(lam(
-  (a,b,c)=>lam(
-    (h1,h2)=> RW(h1, h2, x=> EQ(a,x)),
-    [EQ(a,b), EQ(b,c)],
-    EQ(a,c)
-  ), [BOOL, BOOL, BOOL]
-))
-
-show(lam(
-  (a,b,c)=>lam(
-    (h1,h2)=> RW(h1, h2, x=> EQ(a,x)),
-    [EQ(a,b), EQ(b,c)],
-    EQ(a,c)
-  ), [BOOL, BOOL, BOOL]
-))
+rejec(Lam((T,a,b,e,P,h)=>[
+  () => [Type, T, T, app(EQ, T, a, b), Arrow(T=>[T,Type]), app(P, a), app(P, b)],
+  () => app(a, P, h)
+]))
 
 
-show(lam(
-  (a,b,c)=>lam(
-    (h1,h2)=> RW(h1, h2, x=> EQ(a,x)),
-    [EQ(a,b), EQ(b,c)],
-    EQ(a,c)
-  ),
-  [BOOL, BOOL, BOOL ]
-).ty)
+let EQ_trans = Lam((T, a, b, c, eq_ab, eq_bc) => [
+  () => [
+    Type,
+    T,T,T,
+    app(EQ, T, a, b),
+    app(EQ, T, b, c),
+    app(EQ, T, a, c),
+  ],
+  () => app(
+    eq_bc,
+    Lam(x=> [
+      ()=> [T, Type],
+      ()=> app(EQ, T, a, x)
+    ]),
+    eq_ab
+  )
+])
 
 
-rejec(lam(
-  (a,b,c)=>lam(
-    (h1,h2)=> RW(h1, h2, x=> EQ(a,x) ),
-    [EQ(a,b), EQ(b,c)],
-    EQ(a,b)
-  ),
-  [BOOL, BOOL, BOOL]
-))
+show(EQ_trans)
 
-rejec(lam(
-  (a,b,c)=>lam(
-    (h1,h2)=> RW(h1, h2, x=> EQ(a,x)),
-    [EQ(a,b), EQ(a,c)],
-    EQ(a,c)
-  ), [BOOL, BOOL, BOOL]
-))
+check(EQ_trans)
 
-let Nat = {} as CHOICE
-Object.assign(Nat, CHOICE([Nat, Null], "Nat"))
+// let Nat = ENUM([], [])
+// Object.assign(Nat, ENUM([Nat], []))
+// Nat.name = "Nat"
 
-show(Nat)
-
-check(Nat)
+// show(Nat)
+// check(Nat)
 
 
-let recf = {} as destruct
-Object.assign(recf, lam( x=> app(recf, [x]), [Nat], Nat))
-recf.name = "recf"
 
-// rejec(recf)
