@@ -162,16 +162,15 @@ function checkEQ(a: Term, b: Term){
 }
 
 function wellFounded(A: Term, a: Term):boolean{
-  if (A.$ != a.$) return false
+  // if (A.$ != a.$) return false
   if (A == a) return false 
-  // if (A.$ == "struct" && a.$ == "struct"){
-  //   for (let i = 0; i < A.srcs.length; i++){
-  //     if (A.srcs[i] == a || wellFounded(A.srcs[i], a.srcs[i])) return true
-  //   }
-  // }
-  // if (A.$ == "choice" && a.$ == "choice"){
-  //   if (A.src == a || wellFounded(A.src, a.src)) return true
-  // }
+
+  show("A:", A.$)
+  if (A.$ == "adt"){
+    for(let el of A.srcs){
+      if (el == a) return true
+    }
+  }
   return false
 }
 
@@ -200,11 +199,11 @@ rfl.name = "rfl"
 function check(t:Term){
 
   let symCounter = {c: 0}
-  let seen = new Set<Term>()
+  // let seen = new Set<Term>()
 
   type CallStack = {
     f: Term
-    arg: Term
+    args: Term[]
     prev: CallStack
   } | null
 
@@ -214,7 +213,6 @@ function check(t:Term){
     if(t == rfl) return t
 
     function checkSig(args: Term[], sig: Sign){
-
       let A = sig.f(...args)
       zip(A, args, (a,t)=> go(t, cs, a))
     }
@@ -229,47 +227,50 @@ function check(t:Term){
       } 
     }
 
-    seen.add(t)
     const type = run(t.ty)
 
     switch(t.$){
 
       case "match":{
-
         let arg = asTag(t.scr, "SYM")
         let T = asTag(arg.ty, "ADT")
         let old : SYM = {...arg}
+
         zip(T.variants, t.srcs, (v, s, i)=>{
           let vs = fillSign(symCounter, v)
           Object.assign(arg, adt(T, i, ...vs))
-
           go(s(...vs), cs, type)
         })
         Object.assign(arg, old)
         break
       }
 
-      case "SYM":{
-        break
-      }
-
       case "adt":{
+
         checkSig(t.srcs, asTag(type, "ADT").variants[t.tag])
+
         break
       }
 
       case "Lam":{
         let aro = asTag(t.ty, "Arrow")
         let vs = fillSign(symCounter, aro.DOM)
-        go(t.fn(...vs), cs, aro.COD(...vs))
+        go(t.fn(...vs),  { f: t, args: vs, prev: cs } , aro.COD(...vs))
         break
       }
       
       case "APP":{
+
+        let REC = searchStack(cs, t.fn)
         let aro = asTag(t.fn.ty, "Arrow")
+
         checkSig(t.args, aro.DOM)
         checkEQ(type, aro.COD(...t.args))
-        go(t.fn, cs, aro)
+        if (REC){
+          if (!zip(REC.args, t.args, (a,b)=>wellFounded(a,b)).some(x=>x)) raise(`Non well-founded application detected`)
+        }else{
+          go(t.fn, cs, aro)
+        }
         break
       }
 
@@ -466,7 +467,7 @@ show(EQ_trans)
 check(EQ_trans)
 
 let Nat = ENUM([], [])
-Object.assign(Nat, ENUM([Nat], []))
+Object.assign(Nat, ENUM([], [Nat]))
 Nat.name = "Nat"
 show(Nat)
 
@@ -500,3 +501,22 @@ let eq10_to_empty = Lam(h => [
 ])
 
 check(eq10_to_empty)
+
+
+
+let BAD = Lam(x=> [()=> [Nat, Nat], () => $(BAD, x)])
+
+rejec(BAD)
+
+
+let recc = Lam(n=> [
+  () => [Nat, Nat],
+  () => match(n, [
+    _ => Zero,
+    p => $(recc, p),
+  ])
+])
+recc.name = "recc"
+show(recc)
+
+check(recc)
