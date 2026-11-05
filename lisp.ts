@@ -1,3 +1,4 @@
+import { raise } from "./hoas.4.bigStruct"
 
 
 export type synt = string | synt []
@@ -44,6 +45,7 @@ export function mktree (input: string): synt{
     idx++
     let res: synt[] = []
     while (toks[idx] !== ")"){
+      if (idx >= toks.length) raise(`unexpected end of input while parsing list`)
       res.push(go())
     }
     idx++
