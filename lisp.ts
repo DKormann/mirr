@@ -3,17 +3,12 @@ import { raise } from "./hoas.4.bigStruct"
 
 export type synt = string | synt []
 
-let symbols = [ "(", ")", ":", "->", "=>", ",", "|" ]
 
-function isWS(s: string): boolean{
-  return s === ' ' || s === '\t' || s === '\n' || s === '\r'
-}
-
-function tokenize(input: string): string[]{
+export function parse (input: string): synt{
   let idx = 0
   let toks: string[] = []
-  function parseSym():true| undefined{
-    for (let s of symbols){
+  function parseSym(): true | undefined {
+    for (let s of [ "(", ")", ":", "->", "=>", ",", "|" ]){
       if (input.startsWith(s, idx)){
         idx += s.length
         push()
@@ -29,7 +24,7 @@ function tokenize(input: string): string[]{
     word = ""
   }
   while(idx < input.length){
-    while(isWS(input[idx])){
+    while([" ", "\t", "\n", "\r"].includes(input[idx])){
       push()
       idx++
     }
@@ -37,13 +32,7 @@ function tokenize(input: string): string[]{
     if (idx < input.length) word += input[idx++]
   }
   push()
-  return toks
-}
-
-export function mktree (input: string): synt{
-  let toks = tokenize(input)
-  let idx = 0
-
+  idx = 0
   function go(): synt{
     if (toks[idx] !== "(") return toks[idx++]
     idx++

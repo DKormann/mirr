@@ -1,8 +1,4 @@
-// export type F        = ((...t: Term[]) => Term)
-
-
 Error.stackTraceLimit = 100;
-
 
 export type F        = {names?: string[], length: number, f: (...t: Term[]) => Term}
 export type Sign     = {names?: string[], length: number, f: (...t: Term[]) => Term[]}
@@ -16,16 +12,10 @@ export type Lam      = { ty: Term, $: "Lam",       name: string, fn: F}
 export type SYM      = { ty: Term, $: "SYM",       n: number | string }
 export type Term = Type | Arrow | ADT | adt | match | APP | Lam | SYM
 
-
 export let Hole = {} as Term
-
 export const Type : Term = {$: "Type" ,ty: Hole}
 Type.ty = Type
-
-
 let rfl = {} as Term
-
-
 
 export function raise(msg: string): never {
   throw new Error(msg)
@@ -95,10 +85,12 @@ export function fmt(t: Term, def?: boolean){
 
     if (t == Hole) return '[_]'
     if (t == rfl) return 'rfl'
+
     if (t.$ == "Type") return 'Type'
     if (t.$ == "ADT") return  t.variants.map(v=> `\n  | {${gosig(v)}}`).join('') 
     if (t.$ == "adt") return `#${t.tag}(${t.srcs.map(x=> pln(x)).join(', ')})`
-    if (t.$ == "APP") return `(${pln(t.fn)} ${ t.args.map(x => pln(x)).join(' ')})`
+    if (t.$ == "APP") {
+      return `(${pln(t.fn)} ${ t.args.map(x => pln(x)).join(' ')})`}
     if (t.$ == "Arrow"){
       let vs = fillSign(scounter, t.DOM)
       return `(${vs.map(v => `${pln(v)} : ${pln(v.ty)}`).join(', ')}) -> ${pln(t.COD.f(...vs))}`
@@ -140,11 +132,14 @@ function run(t:Term): Term{
 
 
 function checkEQ(a: Term, b: Term){
-  if (a == b) return
 
   if ( a.$ == "APP" && b.$ == "APP" && a.fn == b.fn && zip(a.args, b.args, (x, y)=> x == y).every(v=>v) ) return
 
+  show(b);
   [a,b] = [run(a), run(b)]
+  if (a == b) return
+
+  
 
   if (a.$ != b.$) {
     raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
@@ -213,7 +208,10 @@ function check(t:Term){
     }
 
     if (ty) {
-      if (t.ty != Hole) checkEQ(t.ty, ty)
+      if (t.ty != Hole) {
+        console.log(t.ty.$, ty.$)
+        checkEQ(t.ty, ty)
+      }
     }
 
     if (t == rfl) return t
@@ -311,12 +309,55 @@ function match(scr: Term, srcs: F[]): match{
   return res
 }
 
-export function show(...t: (Term | string| number)[]) { console.log(t.map(x=> typeof x == "string" || typeof x == "number" ? x : fmt(x)).join(" "))}
+function show(...t: (Term | string| number)[]) { console.log(t.map(x=> typeof x == "string" || typeof x == "number" ? x : fmt(x)).join(" "))}
+type synt = string | synt []
 
-import {mktree, synt} from "./lisp"
+function parse (input: string): synt{
+  let idx = 0
+  let toks: string[] = []
+  function parseSym(): true | undefined {
+    for (let s of [ "(", ")", ":", "->", "=>", ",", "|" ]){
+      if (input.startsWith(s, idx)){
+        idx += s.length
+        push()
+        toks.push(s)
+        return true
+      }
+    }
+  }
+  let word = ""
+  function push(){
+    if (!word) return
+    toks.push(word)
+    word = ""
+  }
+  while(idx < input.length){
+    while([" ", "\t", "\n", "\r"].includes(input[idx])){
+      push()
+      idx++
+    }
+    if (parseSym()) continue
+    if (idx < input.length) word += input[idx++]
+  }
+  push()
+  idx = 0
+  function go(): synt{
+    if (toks[idx] !== "(") return toks[idx++]
+    idx++
+    let res: synt[] = []
+    while (toks[idx] !== ")"){
+      if (idx >= toks.length) raise(`unexpected end of input while parsing list`)
+      res.push(go())
+    }
+    idx++
+    return res
+  }
+  return go()
+}
 
-function compileFN(s: string) : Term{
-  let tr = mktree(s);
+
+function compile(s: string) : Term{
+  let tr = parse(s);
 
   function asIden(tr: synt): string{
     if (typeof tr != "string") raise(`expected an identifier, but got: ${JSON.stringify(tr)}`)
@@ -391,8 +432,6 @@ function compileFN(s: string) : Term{
         return `({ty: book.get("Type"), $: "Arrow", DOM: ${mkSign(dom)}, COD: ${mkF(dom, goTerm(tr.slice(2), ctx.concat(dom.map(([n]) => n))))} })`
       }
 
-
-
       if (tr.includes("=>")){
 
         let args = asSign(tr[0], ctx)
@@ -404,7 +443,6 @@ function compileFN(s: string) : Term{
 
       }
 
-
       if (Array.isArray(tr[0]) && tr[0].includes("=")){
         let letr = tr[0]
         let vname = asIden(letr[0])
@@ -413,7 +451,6 @@ function compileFN(s: string) : Term{
         if (letr[3] != "=") raise(`expected a "=" after the type annotation in the let binding, but got: ${JSON.stringify(tr[3])}`)
         return `(${vname} => ${goTerm(tr.slice(1), ctx.concat([vname]))})(${goTerm(letr[4], ctx, vtype)})`
       }
-
 
       if (typeof tr[0] == "string" && tr[0].startsWith("#")){
         let idx = parseInt(tr[0].slice(1))
@@ -471,14 +508,12 @@ function compileFN(s: string) : Term{
     ctx = ctx.concat(args.map(([v, _])=>v))
     let R =  goTerm(tr[3], ctx)
     code = mkLam(args, R, goTerm(tr.slice(5), ctx, R))
-
   } else if (tr[1] == ":"){
     let ty = goTerm(tr[2], ctx)
     code = `({...${goTerm(tr.slice(4), ctx, ty)}, ty: ${ty} })`
   }else raise(`unexpected syntactic form: ${JSON.stringify(tr)}`)
   
   let Ctx = { match, book, $, obj, }
-  // console.log(code)
   Function(...Object.keys(Ctx), `Object.assign(obj, ${code})`)(...Object.values(Ctx))
   check(obj)
   store(obj, name)
@@ -486,103 +521,132 @@ function compileFN(s: string) : Term{
 }
 
 
-function declineFN(s: string){
-  try{ compileFN(s)}
+function decline(s: string){
+  try{ compile(s)}
   catch(e){return}
   raise(`expected compilation to fail for: ${s}`)
 }
 
 
 
-compileFN("(NULL : Type = | () )")
-compileFN("(Null : NULL = (#0 ) )")
+compile("(NULL : Type = | () )")
+compile("(Null : NULL = (#0 ) )")
 
-compileFN("(BOOL : Type = | () | () )")
-compileFN("(True : BOOL = (#1 ) )")
-compileFN("(False : BOOL = (#0 ) )")
+compile("(BOOL : Type = | () | () )")
+compile("(True : BOOL = (#1 ) )")
+compile("(False : BOOL = (#0 ) )")
 
-compileFN("(_f (x:Type) : Type = x)")
-compileFN("(_f (x:BOOL) : BOOL = match x | => x | => x)")
-compileFN("(_f (x:BOOL) : BOOL = match x | => True | => False)")
-declineFN("(_f (x:BOOL) : BOOL = match x | => True | => NULL)")
-declineFN("(_f (x:BOOL) : BOOL = match x | => NULL | => True)")
+compile("(_f (x:Type) : Type = x)")
+compile("(_f (x:BOOL) : BOOL = match x | => x | => x)")
+compile("(_f (x:BOOL) : BOOL = match x | => True | => False)")
+decline("(_f (x:BOOL) : BOOL = match x | => True | => NULL)")
+decline("(_f (x:BOOL) : BOOL = match x | => NULL | => True)")
 
+compile("(TF (x:BOOL) : Type = match x | => NULL | => BOOL)")
+compile("(_tfm (x:BOOL) : (TF x) = match x | => Null | => True)")
 
+compile("(SIG : Type = | (w: BOOL, y: (TF w) ) )")
+compile("(_sig1 : SIG = (#0 True True) ) ")
+decline("(_sig2 : SIG = (#0 True) )")
+decline("(_sig2 : SIG = (#0 True Null) )")
+decline("(_sig2 : SIG = (#0 False True) )")
+compile("(_sig2 : SIG = (#0 False Null) )")
 
-
-compileFN("(TF (x:BOOL) : Type = match x | => NULL | => BOOL)")
-
-compileFN("(_tfm (x:BOOL) : (TF x) = match x | => Null | => True)")
-
-compileFN("(SIG : Type = | (w: BOOL, y: (TF w) ) )")
-compileFN("(_sig1 : SIG = (#0 True True) ) ")
-declineFN("(_sig2 : SIG = (#0 True) )")
-declineFN("(_sig2 : SIG = (#0 True Null) )")
-declineFN("(_sig2 : SIG = (#0 False True) )")
-compileFN("(_sig2 : SIG = (#0 False Null) )")
-
-compileFN("(WRP (T: Type): Type = | (x: T) )")
-compileFN("(_wrpB : (WRP BOOL) = (#0 True) )")
-declineFN("(_wrpB : (WRP NULL) = (#0 True) )")
+compile("(WRP (T: Type): Type = | (x: T) )")
+compile("(_wrpB : (WRP BOOL) = (#0 True) )")
+decline("(_wrpB : (WRP NULL) = (#0 True) )")
 
 
 
-let Nat = compileFN("(Nat: Type = | () | (p: Nat) )")
-
-
-
-
-let Zero = compileFN("(Zero : Nat = (#0 ) )")
-let Succ = compileFN("(Succ (n: Nat) : Nat = (#1 n) )")
-let pred = compileFN("(pred (n: Nat) : Nat = match n | => Zero | p => p )")
+let Nat  = compile("(Nat: Type = | () | (p: Nat) )")
+let Zero = compile("(Zero : Nat = (#0 ) )")
+let Succ = compile("(1+ (n: Nat) : Nat = (#1 n) )")
+let pred = compile("(pred (n: Nat) : Nat = match n | => Zero | p => p )")
 
 // compileFN("( ppef : (EQ Nat Zero Zero) )")
 
-let eater = compileFN("(eater (n: Nat): Nat = match n | => Zero | p => (eater p) )")
-let n1 =    compileFN("(n1 : Nat = (Succ Zero) )")
-let n2 =    compileFN("(n2 : Nat = (Succ (Succ Zero ))  )")
-let aro =   compileFN("(aro : Type = (x: Nat) -> Nat )")
+let eater = compile("(eater (n: Nat): Nat = match n | => Zero | p => (eater p) )")
+let n0 =    compile("(n0 : Nat = Zero)")
+let n1 =    compile("(n1 : Nat = (1+ Zero) )")
+let n2 =    compile("(n2 : Nat = (1+ (1+ Zero ))  )")
+let aro =   compile("(aro : Type = (x: Nat) -> Nat )")
 
-compileFN("(_uu : aro = pred )")
+compile("(_uu : aro = pred )")
 
 
-let EQ  = compileFN("(EQ (T: Type, a: T, b: T) : Type = (P: ( (x:T)->Type), h: (P a) ) ->  (P b) )")
-let RFL = compileFN("(RFL: Type = (T: Type, x: T) -> (EQ T x x) )")
+
+/**
+ * Equality is defined as proof of (P a) -> (P b) for all P, a, b
+ * this is one way, symmetry can be derived
+ * rfl is an AXIOM, saying for all x : x == x
+ */
+let EQ  = compile("(EQ (T: Type, a: T, b: T) : Type = (P: ( (x:T)->Type), h: (P a) ) ->  (P b) )")
+let RFL = compile("(RFL: Type = (T: Type, x: T) -> (EQ T x x) )")
 rfl.ty = RFL
 
 
-compileFN("(_pp : (EQ  Nat (pred n1) Zero ) = (rfl Nat Zero) ) ")
-compileFN("(_ppe : (EQ  Nat (eater n2) Zero ) = (rfl Nat Zero) ) ")
-declineFN("(_ppne : (EQ  Nat (pred n2) Zero ) = (rfl Nat Zero) )")
+compile("(_pp : (EQ  Nat (pred n1) Zero ) = (rfl Nat Zero) ) ")
+compile("(_ppe : (EQ  Nat (eater n2) Zero ) = (rfl Nat Zero) ) ")
+decline("(_ppne : (EQ  Nat (pred n2) Zero ) = (rfl Nat Zero) )")
 
-compileFN(`(pr0 (n: Nat ) : (EQ Nat Zero Zero) = 
+compile(`(pr0 (n: Nat ) : (EQ Nat Zero Zero) =  match n | => (rfl Nat n) | p => (rfl Nat Zero) ) `)
+
+compile (" (NPred : Type = (n: Nat) -> Type )")
+
+compile(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) =  (h n) ) `)
+decline(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) =  (h Zero) ) `)
+
+compile(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) = match n | => (h n) | p => (h n) ) `)
+decline(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) = match n | => (h n) | p => (h p) ) `)
+
+compile(`(isZ (n: Nat) : Type = (EQ Nat Zero n))`)
+compile("(_p (n: Nat) : Type = (isZ (eater n))) ")
+
+compile("(eater_n_eq (n: Nat): (EQ Nat (eater n) (eater (1+ n)) ) = (rfl Nat (eater n)) )")
+
+decline("(_p (n: Nat): (EQ Nat (eater n) (eater (1+ n)) ) = (rfl Nat (pred n)) )")
+decline("(_p (n: Nat): (EQ Nat Zero n1) = (rfl Nat Zero)")
+compile(`(_p (n: Nat ) : ( EQ Nat (eater n) (eater (1+ n) ) ) = ( eater_n_eq n ) )`)
+
+compile(`(eater_0 (n: Nat) : (isZ (eater n)) =  match n | => (rfl Nat Zero) | p => ((eater_n_eq p) isZ (eater_0 p)) )`)
+
+compile(`(_cloj (x: Nat) : Nat = (y: Nat = Zero) y)`)
+compile(`(_cloj2 : ((x:Nat) -> Nat ) = (x: Nat): Nat => x)`)
+
+compile(`( EQ.tran (T: Type, a: T, b: T, c: T, e1: (EQ T a b), e2: (EQ T b c)) : (EQ T a c) = (e2 ((x: T) : Type => (EQ T a x)) e1) )`)
+
+compile(`( EQ.symm (T: Type, a: T, b: T, e: (EQ T a b)) : (EQ T b a) = (e ((x: T) : Type => (EQ T x a)) (rfl T a) ) )`)
+
+
+compile(`( + (n: Nat, m: Nat) : Nat =
   match n
-    | => (rfl Nat n)
-    | p => (rfl Nat Zero)
-  ) `)
-
-compileFN (" (NPred : Type = (n: Nat) -> Type )")
-
-compileFN(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) =  (h n) ) `)
-declineFN(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) =  (h Zero) ) `)
-
-compileFN(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) = match n | => (h n) | p => (h n) ) `)
-declineFN(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) = match n | => (h n) | p => (h p) ) `)
-
-compileFN(`(isZ (n: Nat) : Type = (EQ Nat Zero n))`)
-compileFN("(_p (n: Nat) : Type = (isZ (eater n))) ")
-
-compileFN("(prax (n: Nat): (EQ Nat (eater n) (eater (Succ n)) ) = (rfl Nat (eater n)) )")
-
-declineFN("(_p (n: Nat): (EQ Nat (eater n) (eater (Succ n)) ) = (rfl Nat (pred n)) )")
-declineFN("(_p (n: Nat): (EQ Nat Zero n1) = (rfl Nat Zero)")
-compileFN(`(_p (n: Nat ) : ( EQ Nat (eater n) (eater (Succ n) ) ) = ( prax n ) )`)
-
-compileFN(`(peatz (n: Nat) : (isZ (eater n)) =  match n | => (rfl Nat Zero) | p => ((prax p) isZ (peatz p)) )`)
+    | => m
+    | p => (1+ (+ p m))
+)`)
 
 
+compile(`(== (n: Nat, m: Nat) : Type = (EQ Nat n m))`)
 
-compileFN(`(_cloj (x: Nat) : Nat = (y: Nat = Zero) y)`)
-compileFN(`(_cloj2 : ((x:Nat) -> Nat ) = (x: Nat): Nat => x)`)
 
-compileFN(`( EQ.symm (T: Type, a: T, b: T, e: (EQ T a b)) : (EQ T b a) = (e ((x: T) : Type => (EQ T x a)) (rfl T a) ) )`)
+show(run($(EQ, Nat, Zero, Zero)))
+
+compile( `( Eq.cong (T: Type, a: T, b: T, f: ((x:T) -> Type), e: (EQ T a b)) : (EQ (f a) (f b)) = 
+
+  (e f (rfl Type (f a)) )
+)`)
+  
+
+  
+
+// compile(`( add.succ.0 (k: Nat) : (== (+ n1 k) (1+ (+ n0 k) )) = (rfl Nat (+ n1 k)) )`)
+
+// // compile(`( add.0.step (n: Nat, h: (EQ Nat (+ n Zero) n)) : (EQ Nat (+ (1+ n) Zero) (1+ n)) = ((rfl Nat ))`)
+
+
+
+
+// compile(`( add.0 (n: Nat) : (EQ Nat (+ n Zero) n) =
+//   match n
+//     | => (rfl Nat n0)
+//     | => (rfl Nat n0)
+// )`)
