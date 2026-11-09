@@ -5,6 +5,10 @@ export type synt = string | synt []
 
 let symbols = [ "(", ")", ":", "->", "=>", ",", "|" ]
 
+function isWS(s: string): boolean{
+  return s === ' ' || s === '\t' || s === '\n' || s === '\r'
+}
+
 function tokenize(input: string): string[]{
   let idx = 0
   let toks: string[] = []
@@ -25,7 +29,7 @@ function tokenize(input: string): string[]{
     word = ""
   }
   while(idx < input.length){
-    while(input[idx] == ' ') {
+    while(isWS(input[idx])){
       push()
       idx++
     }

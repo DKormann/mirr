@@ -1,5 +1,9 @@
 // export type F        = ((...t: Term[]) => Term)
 
+
+Error.stackTraceLimit = 100;
+
+
 export type F        = {names?: string[], length: number, f: (...t: Term[]) => Term}
 export type Sign     = {names?: string[], length: number, f: (...t: Term[]) => Term[]}
 export type Type     = { ty: Term, $: "Type",     }
@@ -19,6 +23,10 @@ export const Type : Term = {$: "Type" ,ty: Hole}
 Type.ty = Type
 
 
+let rfl = {} as Term
+
+
+
 export function raise(msg: string): never {
   throw new Error(msg)
 }
@@ -27,8 +35,6 @@ function zip<T,S,U>(ts: T[], s: S[], f: (t: T, s: S, i: number)=>U): U[] {
   if (ts.length !== s.length) throw new Error(`zip: arrays must have the same length, got ${ts.length} and ${s.length}`)
   return ts.map((t, i) => f(t, s[i], i))
 }
-
-
 
 let symlist = (ctr: {c:number} , n: number, ty? :Term) => Array.from({length: n}, (_, i) => sym(ctr.c++, ty ?? Hole))
 
@@ -56,35 +62,30 @@ let argnames = (f: Function) =>{
   return match[1].split(',').map(x => x.trim()).slice(0, f.length)
 }
 
-
 let names = new Map<Term, string>()
-let book = new Map<string, Term>([
-  ["Type", Type]
-])
-
+let book = new Map<string, Term>([["Type", Type], ["rfl", rfl], ["Hole", Hole]])
 
 function store(t: Term, name: string){
   names.set(t, name)
   book.set(name, t)
-  console.log(`${name} = ${fmt(t, true)}`)
+  if (!name.startsWith("_")) console.log(`${name} ${fmt(t, true)}`)
 }
-
-// let rfl = Lam((T, x) => [
-//   () => [Type, T, $(EQ, T, x, x)],
-//   () => Lam((e, P, h) => [ () => [], () => h ]) ])
-// store(rfl, "rfl")
-
 
 export function fmt(t: Term, def?: boolean){
 
   let scounter = {c: 0}
 
+
+  let stck = new Set<Term>() 
+
   function pln(t:Term, def? : boolean):string{
 
     if (names.has(t) && !def) return names.get(t)!
 
+
     function gofn(f: F, argty?:Term): string{
       let s = symlist(scounter, f.length, argty)
+
       return `({${s.map(v => pln(v)).join(', ')}}) => ${pln(f.f(...s))}`
     }
 
@@ -92,26 +93,27 @@ export function fmt(t: Term, def?: boolean){
       return fillSign(scounter, s).map(v => pln(v)+": "+ pln(v.ty)).join(', ')
     }
 
-    if (t == Hole) return '_'
-    // if (t == rfl) return 'rfl'
+    if (t == Hole) return '[_]'
+    if (t == rfl) return 'rfl'
     if (t.$ == "Type") return 'Type'
     if (t.$ == "ADT") return  t.variants.map(v=> `\n  | {${gosig(v)}}`).join('') 
-
     if (t.$ == "adt") return `#${t.tag}(${t.srcs.map(x=> pln(x)).join(', ')})`
-
-    if (t.$ == "APP") return `${pln(t.fn)}(${ t.args.map(x => pln(x)).join(', ')})`
+    if (t.$ == "APP") return `(${pln(t.fn)} ${ t.args.map(x => pln(x)).join(' ')})`
     if (t.$ == "Arrow"){
       let vs = fillSign(scounter, t.DOM)
       return `(${vs.map(v => `${pln(v)} : ${pln(v.ty)}`).join(', ')}) -> ${pln(t.COD.f(...vs))}`
     }
-  
+
     if (t.$ == "SYM") return typeof t.n == "number" ? `x${t.n}` : t.n
     if (t.$ == "match") return `match ${pln(t.scr)}:${t.srcs.map(x=> `\n  | ${gofn(x)}`).join('')}`
+
+    
     if (t.$ == "Lam") {
+      if (stck.has(t)) return `[rec ${names.get(t) ?? t.$}]`
+      stck.add(t)
       if (t.ty.$ == "Arrow"){
         let syms = fillSign(scounter, t.ty.DOM)
-
-        return `(${syms.map(v => `${pln(v)} : ${pln(v.ty)}`).join(', ')}):${pln(t.ty.COD.f(...syms))} => ${pln(t.fn.f(...syms))}`
+        return `(${syms.map(v => `${pln(v)} : ${pln(v.ty)}`).join(', ')}):${pln(t.ty.COD.f(...syms))} = ${pln(t.fn.f(...syms))}`
       }
       return `${t.fn.toString()}`
     }
@@ -139,15 +141,12 @@ function run(t:Term): Term{
 
 function checkEQ(a: Term, b: Term){
   if (a == b) return
+
+  if ( a.$ == "APP" && b.$ == "APP" && a.fn == b.fn && zip(a.args, b.args, (x, y)=> x == y).every(v=>v) ) return
+
   [a,b] = [run(a), run(b)]
+
   if (a.$ != b.$) {
-    if (a.$ == "match"){
-      for (let arm of a.srcs){
-        if (arm.length > 0) raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
-        checkEQ(arm.f(), b)
-      }
-      return
-    }
     raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
   }
   if (a.$ == "SYM") if (a!=b) raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
@@ -167,11 +166,12 @@ function checkEQ(a: Term, b: Term){
     checkEQ(a.fn, (b as APP).fn)
     zip(a.args, (b as APP).args, (x, y)=> checkEQ(x, y))
   }
+
   if (a.$ == "match"){
     checkEQ(a.scr, (b as match).scr)
     zip(a.srcs, (b as match).srcs, (x, y)=> {
       let vs = symlist({c:0}, Math.max(x.length, y.length))
-      checkEQ(x.f(...vs), y.f(...vs))
+      if (x.f != y.f) checkEQ(x.f(...vs), y.f(...vs))
     })
   }
 
@@ -182,24 +182,15 @@ function checkEQ(a: Term, b: Term){
     checkEQ(a.COD.f(...vs), b.COD.f(...vs)) 
   }
 
-  if (a.$ == "Lam" || a.$ == "SYM"){
-    raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
-  }
+  if (a.$ == "Lam" || a.$ == "SYM") raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
 }
 
 function wellFounded(A: Term, a: Term):boolean{
-  // if (A.$ != a.$) return false
   if (A == a) return false 
 
-  show("A:", A.$)
-  if (A.$ == "adt"){
-    for(let el of A.srcs){
-      if (el == a) return true
-    }
-  }
+  if (A.$ == "adt") for(let el of A.srcs) if (el == a) return true
   return false
 }
-
 
 function asTag <$ extends Term["$"]>(t: Term, tag: $) : Term & {$: $}{
   t = run(t)
@@ -207,38 +198,28 @@ function asTag <$ extends Term["$"]>(t: Term, tag: $) : Term & {$: $}{
   return t as Term & {$: $}
 }
 
-
-// let EQ = Lam((T, a, b)=>[
-//   () => [Type, T, T, Type],
-//   () => Arrow((P, h) => [ Arrow((x)=> [T, Type]), $(P, a), $(P, b)])
-// ])
-// EQ.name = "EQ"
-// store(EQ, "EQ")
-
+let checked = new Set<Term> ()
 
 function check(t:Term){
 
   let symCounter = {c: 0}
-  // let seen = new Set<Term>()
 
-  type CallStack = {
-    f: Term
-    args: Term[]
-    prev: CallStack
-  } | null
-
+  type CallStack = { f: Term, args: Term[], prev: CallStack } | null
 
   function go(t:Term, cs: CallStack, ty?:Term) :Term{
-
-    // if(t == rfl) return t
-
     function checkSig(args: Term[], sig: Sign){
       let A = sig.f(...args)
       zip(A, args, (a,t)=> go(t, cs, a))
     }
 
-    if (ty) checkEQ(t.ty, ty)
+    if (ty) {
+      if (t.ty != Hole) checkEQ(t.ty, ty)
+    }
 
+    if (t == rfl) return t
+
+
+    
     function searchStack(c: CallStack, t: Term){
       c = cs
       while (c){
@@ -247,13 +228,22 @@ function check(t:Term){
       } 
     }
 
-    const type = run(t.ty)
+
+    let type = t.ty
+    if (t.ty == Hole) {
+      if (!ty) raise(`Cannot infer type for term ${fmt(t)}`)
+      type = ty
+    }
+    type = run(type)
+
+    if (checked.has(t)) return t
 
     switch(t.$){
       case "match":{
         let arg = asTag(t.scr, "SYM")
         let T = asTag(arg.ty, "ADT")
         let old : SYM = {...arg}
+
         zip(T.variants, t.srcs, (v, s, i)=>{
           let vs = fillSign(symCounter, v)
           Object.assign(arg, adt(T, i, ...vs))
@@ -263,14 +253,15 @@ function check(t:Term){
         break
       }
       case "adt":{
-        checkSig(t.srcs, asTag(type, "ADT").variants[t.tag])
+        let vari = asTag(type, "ADT").variants[t.tag]
+        if (t.srcs.length != vari.length) raise(`invalid constructor args for ${fmt(type)}: [${t.srcs.map(x=>fmt(x))}]`)
+        checkSig(t.srcs, vari)
         break
       }
       case "Lam":{
         if (searchStack(cs, t)) raise(`Non well-founded lambda detected`)
         let aro = asTag(t.ty, "Arrow")
         let vs = fillSign(symCounter, aro.DOM)
-        show(...vs)
 
         go(t.fn.f(...vs),  { f: t, args: vs, prev: cs } , aro.COD.f(...vs))
         break
@@ -281,11 +272,8 @@ function check(t:Term){
         let aro = asTag(t.fn.ty, "Arrow")
         checkSig(t.args, aro.DOM)
         checkEQ(type, aro.COD.f(...t.args))
-        if (REC){
-          if (!zip(REC.args, t.args, (a,b)=>wellFounded(a,b)).some(x=>x)) raise(`Non well-founded application detected`)
-        }else{
-          go(t.fn, cs, aro.COD.f(...t.args))
-        }
+        if (REC){ if (!zip(REC.args, t.args, (a,b)=>wellFounded(a,b)).some(x=>x)) raise(`Non well-founded application detected`) }
+        else{ go(t.fn, cs, aro) }
         break
       }
 
@@ -295,261 +283,35 @@ function check(t:Term){
 
   go(t, null)
 
+
+  checked.add(t)
+
+
 }
 
-/**
- * 
- *  CONSTRUCTOR HELPERS
- *
- */
-
-type FT = F | Term
-
-// function hoas(f: FT): F {
-//   return typeof f == "function" ? f : () => f
-// }
-
-function Arrow(Ts: (...x: Term[]) => Term[]): Arrow{
-  let names = argnames(Ts)
-  let tys = Ts(...symlist({c:0}, Ts.length))
-  let length = tys.length - 1
-  let DOM :Sign = {names, length, f: (...x: Term[]) => Ts(...x).slice(0,length)}
-  let COD = { f: (...x: Term[]) => Ts(...x)[length] , length }
-  return {$: "Arrow", ty: Type, DOM, COD }
-}
-
-function ADT(variants: Sign[], name?: string): ADT{
-  let res : ADT = { $: "ADT", ty: Type, variants }
-  if (name) store(res, name)
-  return res
-}
 
 function adt(ty: Term, tag: number, ...srcs: Term[]): adt{
   return { $: "adt", ty, tag, srcs }
-}
-
-function Sigma(sig: Sign): ADT{ return ADT([sig])}
-function TUPLE(...srcs: Term[]): ADT{ return ENUM(srcs)}
-
-function ENUM(...cases: Term[][]): ADT{
-  return ADT(cases.map(c => ({length: c.length, f: (...x: Term[]) => c } ) ))
-}
-
-function tuple(...srcs: Term[]): adt{
-  return adt(TUPLE(...srcs.map(x=>x.ty)), 0, ...srcs)
 }
 
 function sym(n: number, ty: Term) :SYM {
   return { $: "SYM", n, ty }
 }
 
-// function Lam(def: (...args: Term[]) => [ ()=>Term[], ()=>Term], name? : string) : Lam{
-
-//   let names = argnames(def)
-
-//   function T(...x: Term[]) {
-//     let res = def(...x)[0]()
-//     if (res.length != x.length + 1) raise(`Unexpected result length: expected ${x.length + 1}, got ${res.length}\nin function:${def.toString()} did you forget to provide a return type?`)
-//     return res
-//   }
-
-//   let ty: Arrow = {
-//     $: "Arrow",
-//     ty: Type,
-//     DOM: {names, length: names.length, f: (...x: Term[]) => T(...x).slice(0,-1) },
-//     COD: { f: (...x: Term[]) => T(...x)[names.length], length: names.length }
-//   }
-
-//   let res : Lam = { $: "Lam" , ty, fn: { f: (...x: Term[]) => def(...x)[1](), length: names.length } }
-//   if (name) store(res, name)
-//   return res
-// }
-
-
 function $(fn: Term, ...args: Term[]): APP{
   let ty = fn.ty == Hole ? Hole : asTag(fn.ty, "Arrow").COD.f(...args)
+
   return { $: "APP", ty, fn, args }
 }
 
-function match(scr: Term, srcs: F[], ty?: Term): match{
+function match(scr: Term, srcs: F[]): match{
 
-  // console.log(srcs)
-
-  if (!ty){
-    // ty = {$: "match", ty: Type, scr, srcs: srcs.map(f => (...x: Term[]) => f.f(...x).ty) }
-    ty = {$: "match", ty: Type, scr, srcs: srcs.map(f => ({length: f.length, f: (...x: Term[]) => f.f(...x).ty }) ) }
-
-  }
-
-  return { $: "match", ty, scr, srcs }
-}
-
-
-function rejec(term: Term){
-  try{ check(term) }
-  catch(e){ return }
-  throw new Error(`Term accepted: ${fmt(term)}`)
+  let ty: match = {$: "match", ty: Type, scr, srcs: srcs.map((f,i)=>({...f, f: (...vs:Term[]) => f.f(...vs).ty} as F))}
+  let res : match = { $: "match", ty, scr, srcs }
+  return res
 }
 
 export function show(...t: (Term | string| number)[]) { console.log(t.map(x=> typeof x == "string" || typeof x == "number" ? x : fmt(x)).join(" "))}
-
-
-let NULL = TUPLE()
-store(NULL, "NULL")
-show(NULL)
-
-let Null = adt(NULL, 0)
-store(Null, "Null")
-
-let BOOL = ENUM([], [])
-store(BOOL, "BOOL")
-show(BOOL)
-let True = adt(BOOL, 1)
-store(True, "True")
-let False = adt(BOOL, 0)
-store(False, "False")
-
-show(True)
-check(True)
-
-// check(Lam(x=> [()=> [BOOL, BOOL], ()=> x ]))
-// rejec(Lam(x=> [()=> [BOOL, NULL], ()=> x ]))
-
-
-
-// check(match(sym(0, BOOL), [x=>True, x=>False]))
-
-// check(Lam(x=> [()=> [BOOL, BOOL], ()=>match(x, [x=>True, x=>False])]))
-
-// rejec(Lam(x=> [()=> [BOOL, NULL], ()=>match(x, [x=>True, x=>Null])]))
-
-
-
-// rejec(Lam(x=> [()=> [BOOL, NULL], ()=> match(x, [x=>True, x=>False])]))
-// rejec(Lam(x=> [()=> [NULL, BOOL], ()=> match(x, [x=>True, x=>False])]))
-// rejec(Lam(x=> [()=> [BOOL, BOOL], ()=> match(x, [x=>True, x=>Null])]))
-// check(Lam(x=> [()=> [BOOL, BOOL], ()=> match(x, [x=>True, _=>x])]))
-
-// rejec(Lam(x=> [()=> [BOOL], ()=> NULL ]))
-
-// checkEQ(match(True, [x=>True, x=>False]), False)
-
-
-// let TF = Lam(b=> [()=> [BOOL, Type], ()=> match(b, [x=>NULL, x=>BOOL])], "TF")
-
-
-// show(TF)
-// check(TF)
-
-
-// check(Lam(b=> [()=> [BOOL, $(TF, b)], ()=> match(b, [_=>Null, _=>True], $(TF, b))]))
-// rejec(Lam(b=> [()=> [BOOL, $(TF, b)], ()=> match(b, [_=>Null, _=>Null], $(TF, b))]))
-// rejec(Lam(b=> [()=> [BOOL, $(TF, b)], ()=> match(b, [_=>True, _=>True], $(TF, b))]))
-
-
-// let p1 = Lam((T,a,b,eq,P,h)=>[
-//   () => [Type, T, T, $(EQ, T, a, b), Arrow(T=>[T,Type]), $(P, a), $(P, b)],
-//   () => $(eq, P, h)
-// ])
-
-// check(p1)
-
-
-// rejec(Lam((T,a,b,e,P,h)=>[
-//   () => [Type, T, T, $(EQ, T, a, a), Arrow(T=>[T,Type]), $(P, a), $(P, b)],
-//   () => $(e, P, h)
-// ]))
-
-// rejec(Lam((T,a,b,e,P,h)=>[
-//   () => [Type, T, T, $(EQ, T, a, b), Arrow(T=>[T,Type]), $(P, a), $(P, a)],
-//   () => $(e, P, h)
-// ]))
-
-// rejec(Lam((T,a,b,e,P,h)=>[
-//   () => [Type, T, T, $(EQ, T, a, b), Arrow(T=>[T,Type]), $(P, a), $(P, b)],
-//   () => $(a, P, h)
-// ]))
-
-
-
-// let EQ_trans = Lam((T, a, b, c, eq_ab, eq_bc) =>{
-//   let EQT: F = (x,y) => $(EQ, T, x, y)
-//   let P = Lam(x=> [ ()=> [T, Type], ()=> EQT(a, x) ])
-//   return [
-//     () => [ Type, T,T,T, EQT(a, b), EQT(b, c), EQT(a, c) ],
-//     () => $( eq_bc, P, eq_ab )
-//   ]
-// })
-
-
-// show(EQ_trans)
-// check(EQ_trans)
-
-let Nat = ENUM([], [])
-Object.assign(Nat, ENUM([], [Nat]))
-store(Nat, "Nat")
-
-
-
-let Zero = adt(Nat, 0)
-store(Zero, "Zero")
-// let Succ = Lam(n=> [()=> [Nat, Nat], ()=> adt(Nat, 1, n)])
-// store(Succ, "Succ")
-
-// let One = $(Succ, Zero)
-// store(One, "One")
-
-let EMPTY = ADT([], "EMPTY")
-
-// let exfN = Lam(x=> [()=> [EMPTY, Nat], ()=> match(x, [], Nat)])
-// check(exfN)
-
-// let z0_transport = Lam(n => [
-//   () => [Nat, Type],
-//   () => match(n, [_ => NULL, _ => EMPTY])
-// ])
-
-// check(z0_transport)
-
-// let eq10_to_empty = Lam(h => [
-//   () => [ $(EQ, Nat, Zero, One), EMPTY ],
-//   () => $( h, z0_transport, Null )
-// ])
-
-// check(eq10_to_empty)
-
-
-
-// let BAD = Lam(x=> [()=> [Nat, Nat], () => $(BAD, x)])
-
-// rejec(BAD)
-
-
-// let recc = Lam(n=> [
-//   () => [Nat, Nat],
-//   () => match(n, [
-//     _ => Zero,
-//     p => $(recc, p),
-//   ])
-// ])
-// store(recc, "recc")
-// check(recc)
-
-// let BadSink = Lam(f=>[
-//   () => [Arrow(x=> [Nat, Nat]), Nat],
-//   () => Zero
-// ])
-// store(BadSink, "BadSink")
-// check(BadSink)
-
-// let BadPass = {} as Lam
-// Object.assign(BadPass, Lam(x=>[
-//   () => [Arrow(x=>[Nat, Nat]), Nat],
-//   () => $(BadSink, BadPass)
-// ]))
-// store(BadPass, "BadPass")
-
-// rejec(BadPass)
 
 import {mktree, synt} from "./lisp"
 
@@ -570,7 +332,12 @@ function compileFN(s: string) : Term{
     return [v, goTerm(t, ctx)]
   }
 
-
+  function asSign(tr: synt, ctx: Ctx): [string, string][]{
+    if (!Array.isArray(tr)) raise(`expected a list of annotations, but got: ${JSON.stringify(tr)}`)
+    let anns: [string, string][] = []
+    for (let x of splitList(tr, ",")) anns.push(asAnnot(x, ctx.concat(anns.map(a => a[0]))))
+    return anns
+  }
 
   function splitList(tr: synt, sep: string): synt[]{
     let res: synt[] = []
@@ -584,102 +351,238 @@ function compileFN(s: string) : Term{
     return res
   }
 
-  function goTerm(tr: synt, ctx: Ctx): string{
+  function goTerm(tr: synt, ctx: Ctx, ty?: string): string{
+
     if (typeof tr == "string") {
       if (!ctx.includes(tr)) {
         if (book.has(tr)) return `book.get("${tr}")`
         raise(`unbound identifier: ${tr}`)}
       return tr
     }
+
     if (Array.isArray(tr)) {
-      if (tr.length == 1) return goTerm(tr[0], ctx)
       if (tr[0] == "match") {
-        let arms = splitList(tr, "|").slice(1)
-        return`match(${goTerm(tr[1], ctx)}, [${arms.map(arm => {
-          let [pat, expr] = splitList(arm, "=>")
-          if (typeof pat == "string") pat = [pat]
-          for (let p of pat) if (typeof p != "string") raise(`expected a string in the pattern, but got: ${JSON.stringify(p)}`)
-          return `{length: ${pat.length}, f: (${pat.join(", ")})=>${goTerm(expr, [...ctx, ...pat as string[]])}}`
-        }).join(", ")}])`
+        return `({
+          $: "match",
+          scr: ${goTerm(tr[1], ctx)},
+          ty: book.get("Hole"),
+          srcs: [${splitList(tr, "|").slice(1).map(arm => {
+            let [pat, expr] = splitList(arm, "=>")
+            if (typeof pat == "string") pat = [pat]
+            for (let p of pat) if (typeof p != "string") raise(`expected a string in the pattern, but got: ${JSON.stringify(p)}`)
+            return `{length: ${pat.length}, names: [${pat.map(x=>`"${x}"`)}], f: (${pat.join(", ")})=>${goTerm(expr, [...ctx, ...pat as string[]])}}`
+          }).join(", ")}]
+        })`
       }
 
+      if (tr[0] == "|"){
+        let args = splitList(tr.slice(1), "|").map(x=> asSign(x[0], ctx))
+        return [
+          `({`,
+          `  $: "ADT",`,
+          `  ty: book.get("Type"),`,
+          `  variants: [${args.map(vr => mkSign(vr)).join(", ")}]`,
+          `})`
+        ].join("\n")
+      }
+
+      if (tr[1] == "->"){
+        let dom = asSign(tr[0], ctx)
+        return `({ty: book.get("Type"), $: "Arrow", DOM: ${mkSign(dom)}, COD: ${mkF(dom, goTerm(tr.slice(2), ctx.concat(dom.map(([n]) => n))))} })`
+      }
+
+
+
+      if (tr.includes("=>")){
+
+        let args = asSign(tr[0], ctx)
+        if (tr[1]!=":") raise(`expected a ":" after the argument list in the lambda, but got: ${JSON.stringify(tr[1])}`)
+        let R = goTerm(tr[2], ctx.concat(args.map(([n]) => n)))
+        if (tr[3] != "=>") raise(`expected a "=>" after the return type in the lambda, but got: ${JSON.stringify(tr[3])}`)
+        let B = goTerm(tr.slice(4), ctx.concat(args.map(([n]) => n)), R)
+        return mkLam(args, R, B)
+
+      }
+
+
+      if (Array.isArray(tr[0]) && tr[0].includes("=")){
+        let letr = tr[0]
+        let vname = asIden(letr[0])
+        if (letr[1] != ":") raise(`expected a ":" after the let binding, but got: ${JSON.stringify(tr[1])}`)
+        let vtype = goTerm(letr[2], ctx)
+        if (letr[3] != "=") raise(`expected a "=" after the type annotation in the let binding, but got: ${JSON.stringify(tr[3])}`)
+        return `(${vname} => ${goTerm(tr.slice(1), ctx.concat([vname]))})(${goTerm(letr[4], ctx, vtype)})`
+      }
+
+
+      if (typeof tr[0] == "string" && tr[0].startsWith("#")){
+        let idx = parseInt(tr[0].slice(1))
+        if (isNaN(idx)) raise(`expected a numeric index after "#", but got: ${tr[0].slice(1)}`)
+        let args = tr.slice(1).map(x=>goTerm(x, ctx))
+        if (ty == undefined) raise(`expected a type for the contructor`)
+        return `{$:"adt", tag: ${idx}, srcs: [${args.join(", ")}], ty: ${ty}}`
+      }
+
+      if (tr.length == 1) return goTerm(tr[0], ctx, ty)
       return `$( ${tr.map(x=>goTerm(x, ctx)).join(", ")} )`
-
-
     }
     raise(`expected a term, but got: ${JSON.stringify(tr)}`)
   }
 
-  function mkSign(args: [string, string][]): string{
+  function mkSign(args: [string, string][]): string{return mkF(args, `[${args.map(([_,t])=>t)}]`)}
+
+  function mkF(args: [string, string][], bod: string): string{
     return `({
     names: [${args.map(([v, _])=>`"${v}"`).join(", ")}],
     length: ${args.length},
-    f: ${mkFun(args, `[${args.map(([_, t])=>t).join(", ")}]`)},
-  })`
+    f: ${mkFun(args, bod)},
+    })`
   }
 
-  function mkFun(args: [string, string][], bod: string): string{
-    return `((${args.map(([v, _])=>v).join(", ")})=>${bod})`
+  function mkFun(args: [string, string][], bod: string): string{ return `((${args.map(([v, _])=>v).join(", ")})=>${bod})`}
+
+
+  function mkLam(args: [string, string][], R: string, bod: string) : string {
+    return [
+      `({`,
+      `  $: "Lam",`,
+      `  name: "${name}",`,
+      `  ty: {`,
+      `    $: "Arrow",`,
+      `    DOM: ${mkSign(args)},`,
+      `    COD: { length: ${args.length}, f: (${args.map(([v, _])=>v)})=> (${R}) } },`,
+      `  fn: { length: ${args.length}, f: (${args.map(([v, _])=>v)})=> (${bod}) }`,
+      `})`
+    ].join("\n");
   }
 
   let ctx :Ctx = []
-  function go(tr: synt): string{
-    if (typeof tr == "string") {
+  let obj = {} as Term
+  if (typeof tr == "string") raise(`unexpected string term at top level: ${tr}`)
 
-    }else{
-      let name = asIden(tr[0])
-      if (Array.isArray(tr[1])){
-        console.log({name})
-        let colIdx = tr.findIndex(x=> x == ":")
-        let eqIdx = tr.findIndex(x=> x == "=")
-        if (colIdx == -1) raise(`expected a ":" in the function declaration, but got: ${JSON.stringify(tr)}`)
-        if (eqIdx == -1) raise(`expected a "=" in the function declaration, but got: ${JSON.stringify(tr)}`)
-        let args = tr.slice(1, colIdx).map(x=>asAnnot(x , ctx))
-        ctx = [...ctx, ...args.map(([v, _])=>v)]
-        let retType = goTerm(tr[colIdx + 1], ctx)
-        let body = goTerm(tr.slice(eqIdx + 1), ctx)
+  let name = asIden(tr[0])
+  book.set(name, obj)
 
-        let argvs = `(${args.map(([v, _])=>v).join(", ")})=>`
-        
-        return [
-          `({$: "Lam",`,
-          `name: "${name}",`,
-          `ty: {`,
-          `  $: "Arrow",`,
-          `  DOM: ${mkSign(args)},`,
-          `  COD: { length: ${args.length}, f: ${argvs} ${retType}} },`,
-          `fn: { length: ${args.length}, f: ${argvs} ${body} }`,
-          `})`
-        ].join("\n")
-      }
-    }
+  let code : string
+  if (Array.isArray(tr[1])){
+    if (tr[2] != ":") raise(`expected a ":" after the argument list, but got: ${JSON.stringify(tr[2])}`)
+    if (tr[4] != "=") raise(`expected a "=" after the return type, but got: ${JSON.stringify(tr[4])}`)
+    let args = asSign(tr[1], ctx)
+    ctx = ctx.concat(args.map(([v, _])=>v))
+    let R =  goTerm(tr[3], ctx)
+    code = mkLam(args, R, goTerm(tr.slice(5), ctx, R))
 
-    return "{}"
-  }
-
-  let res = go(tr)
-  show(res)
-
-  let Ctx = {
-
-    match,
-    book,
-    $,
-  }
-
-  let func = Function(...Object.keys(Ctx), `return ${res}`)(...Object.values(Ctx)) as Lam
-  store(func, func.name)
-  check(func)
-  return func
+  } else if (tr[1] == ":"){
+    let ty = goTerm(tr[2], ctx)
+    code = `({...${goTerm(tr.slice(4), ctx, ty)}, ty: ${ty} })`
+  }else raise(`unexpected syntactic form: ${JSON.stringify(tr)}`)
+  
+  let Ctx = { match, book, $, obj, }
+  // console.log(code)
+  Function(...Object.keys(Ctx), `Object.assign(obj, ${code})`)(...Object.values(Ctx))
+  check(obj)
+  store(obj, name)
+  return obj
 }
 
 
-compileFN("(f (x:Type) : Type = x)")
+function declineFN(s: string){
+  try{ compileFN(s)}
+  catch(e){return}
+  raise(`expected compilation to fail for: ${s}`)
+}
 
-compileFN("(f (x:BOOL) : BOOL = match x | => x | => x)")
+
+
+compileFN("(NULL : Type = | () )")
+compileFN("(Null : NULL = (#0 ) )")
+
+compileFN("(BOOL : Type = | () | () )")
+compileFN("(True : BOOL = (#1 ) )")
+compileFN("(False : BOOL = (#0 ) )")
+
+compileFN("(_f (x:Type) : Type = x)")
+compileFN("(_f (x:BOOL) : BOOL = match x | => x | => x)")
+compileFN("(_f (x:BOOL) : BOOL = match x | => True | => False)")
+declineFN("(_f (x:BOOL) : BOOL = match x | => True | => NULL)")
+declineFN("(_f (x:BOOL) : BOOL = match x | => NULL | => True)")
+
+
+
 
 compileFN("(TF (x:BOOL) : Type = match x | => NULL | => BOOL)")
 
-compileFN("(tfm (x:BOOL) : (TF x) = match x | => Null | => True)")
+compileFN("(_tfm (x:BOOL) : (TF x) = match x | => Null | => True)")
 
-compileFN("(CHN () : Type = {} ) ")
+compileFN("(SIG : Type = | (w: BOOL, y: (TF w) ) )")
+compileFN("(_sig1 : SIG = (#0 True True) ) ")
+declineFN("(_sig2 : SIG = (#0 True) )")
+declineFN("(_sig2 : SIG = (#0 True Null) )")
+declineFN("(_sig2 : SIG = (#0 False True) )")
+compileFN("(_sig2 : SIG = (#0 False Null) )")
+
+compileFN("(WRP (T: Type): Type = | (x: T) )")
+compileFN("(_wrpB : (WRP BOOL) = (#0 True) )")
+declineFN("(_wrpB : (WRP NULL) = (#0 True) )")
+
+
+
+let Nat = compileFN("(Nat: Type = | () | (p: Nat) )")
+
+
+
+
+let Zero = compileFN("(Zero : Nat = (#0 ) )")
+let Succ = compileFN("(Succ (n: Nat) : Nat = (#1 n) )")
+let pred = compileFN("(pred (n: Nat) : Nat = match n | => Zero | p => p )")
+
+// compileFN("( ppef : (EQ Nat Zero Zero) )")
+
+let eater = compileFN("(eater (n: Nat): Nat = match n | => Zero | p => (eater p) )")
+let n1 =    compileFN("(n1 : Nat = (Succ Zero) )")
+let n2 =    compileFN("(n2 : Nat = (Succ (Succ Zero ))  )")
+let aro =   compileFN("(aro : Type = (x: Nat) -> Nat )")
+
+compileFN("(_uu : aro = pred )")
+
+
+let EQ  = compileFN("(EQ (T: Type, a: T, b: T) : Type = (P: ( (x:T)->Type), h: (P a) ) ->  (P b) )")
+let RFL = compileFN("(RFL: Type = (T: Type, x: T) -> (EQ T x x) )")
+rfl.ty = RFL
+
+
+compileFN("(_pp : (EQ  Nat (pred n1) Zero ) = (rfl Nat Zero) ) ")
+compileFN("(_ppe : (EQ  Nat (eater n2) Zero ) = (rfl Nat Zero) ) ")
+declineFN("(_ppne : (EQ  Nat (pred n2) Zero ) = (rfl Nat Zero) )")
+
+compileFN(`(pr0 (n: Nat ) : (EQ Nat Zero Zero) = 
+  match n
+    | => (rfl Nat n)
+    | p => (rfl Nat Zero)
+  ) `)
+
+compileFN (" (NPred : Type = (n: Nat) -> Type )")
+
+compileFN(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) =  (h n) ) `)
+declineFN(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) =  (h Zero) ) `)
+
+compileFN(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) = match n | => (h n) | p => (h n) ) `)
+declineFN(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) = match n | => (h n) | p => (h p) ) `)
+
+compileFN(`(isZ (n: Nat) : Type = (EQ Nat Zero n))`)
+compileFN("(_p (n: Nat) : Type = (isZ (eater n))) ")
+
+compileFN("(prax (n: Nat): (EQ Nat (eater n) (eater (Succ n)) ) = (rfl Nat (eater n)) )")
+
+declineFN("(_p (n: Nat): (EQ Nat (eater n) (eater (Succ n)) ) = (rfl Nat (pred n)) )")
+declineFN("(_p (n: Nat): (EQ Nat Zero n1) = (rfl Nat Zero)")
+compileFN(`(_p (n: Nat ) : ( EQ Nat (eater n) (eater (Succ n) ) ) = ( prax n ) )`)
+
+compileFN(`(peatz (n: Nat) : (isZ (eater n)) =  match n | => (rfl Nat Zero) | p => ((prax p) isZ (peatz p)) )`)
+
+
+
+compileFN(`(_cloj (x: Nat) : Nat = (y: Nat = Zero) y)`)
+compileFN(`(_cloj2 : ((x:Nat) -> Nat ) = (x: Nat): Nat => x)`)
+
+compileFN(`( EQ.symm (T: Type, a: T, b: T, e: (EQ T a b)) : (EQ T b a) = (e ((x: T) : Type => (EQ T x a)) (rfl T a) ) )`)
