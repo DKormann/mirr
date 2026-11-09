@@ -84,6 +84,7 @@ export function fmt(t: Term, def?: boolean){
     }
 
     if (t == Hole) return '[_]'
+    if (t == sorry) return 'sorry'
     if (t == rfl) return 'rfl'
 
     if (t.$ == "Type") return 'Type'
@@ -135,7 +136,6 @@ function checkEQ(a: Term, b: Term){
 
   if ( a.$ == "APP" && b.$ == "APP" && a.fn == b.fn && zip(a.args, b.args, (x, y)=> x == y).every(v=>v) ) return
 
-  show(b);
   [a,b] = [run(a), run(b)]
   if (a == b) return
 
@@ -154,6 +154,7 @@ function checkEQ(a: Term, b: Term){
     })
   }
   if (a.$ == "adt"){
+
     if (a.tag != (b as adt).tag) raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
     zip(a.srcs, (b as adt).srcs, (x, y)=> checkEQ(x, y))
   }
@@ -195,6 +196,9 @@ function asTag <$ extends Term["$"]>(t: Term, tag: $) : Term & {$: $}{
 
 let checked = new Set<Term> ()
 
+let sorry = {} as Term
+book.set("sorry", sorry)
+
 function check(t:Term){
 
   let symCounter = {c: 0}
@@ -202,17 +206,25 @@ function check(t:Term){
   type CallStack = { f: Term, args: Term[], prev: CallStack } | null
 
   function go(t:Term, cs: CallStack, ty?:Term) :Term{
+
+
     function checkSig(args: Term[], sig: Sign){
       let A = sig.f(...args)
       zip(A, args, (a,t)=> go(t, cs, a))
     }
 
+    if (t == sorry){
+      console.warn(`Sorry: ${fmt(ty ?? Hole)}`)
+      return sorry
+    }
+
     if (ty) {
       if (t.ty != Hole) {
-        console.log(t.ty.$, ty.$)
         checkEQ(t.ty, ty)
       }
     }
+
+
 
     if (t == rfl) return t
 
@@ -360,6 +372,7 @@ function compile(s: string) : Term{
   let tr = parse(s);
 
   function asIden(tr: synt): string{
+
     if (typeof tr != "string") raise(`expected an identifier, but got: ${JSON.stringify(tr)}`)
     return tr
   }
@@ -395,6 +408,7 @@ function compile(s: string) : Term{
   function goTerm(tr: synt, ctx: Ctx, ty?: string): string{
 
     if (typeof tr == "string") {
+      if (tr == "sorry") return `book.get("sorry")`
       if (!ctx.includes(tr)) {
         if (book.has(tr)) return `book.get("${tr}")`
         raise(`unbound identifier: ${tr}`)}
@@ -449,7 +463,7 @@ function compile(s: string) : Term{
         if (letr[1] != ":") raise(`expected a ":" after the let binding, but got: ${JSON.stringify(tr[1])}`)
         let vtype = goTerm(letr[2], ctx)
         if (letr[3] != "=") raise(`expected a "=" after the type annotation in the let binding, but got: ${JSON.stringify(tr[3])}`)
-        return `(${vname} => ${goTerm(tr.slice(1), ctx.concat([vname]))})(${goTerm(letr[4], ctx, vtype)})`
+        return `(${vname} => ${goTerm(tr.slice(1), ctx.concat([vname]))})(${ goTerm(letr[4], ctx, vtype)})`
       }
 
       if (typeof tr[0] == "string" && tr[0].startsWith("#")){
@@ -514,7 +528,7 @@ function compile(s: string) : Term{
   }else raise(`unexpected syntactic form: ${JSON.stringify(tr)}`)
   
   let Ctx = { match, book, $, obj, }
-  Function(...Object.keys(Ctx), `Object.assign(obj, ${code})`)(...Object.values(Ctx))
+  Function(...Object.keys(Ctx),"check", `Object.assign(obj, ${code})`)(...Object.values(Ctx), check)
   check(obj)
   store(obj, name)
   return obj
@@ -610,7 +624,7 @@ compile(`(_p (n: Nat ) : ( EQ Nat (eater n) (eater (1+ n) ) ) = ( eater_n_eq n )
 
 compile(`(eater_0 (n: Nat) : (isZ (eater n)) =  match n | => (rfl Nat Zero) | p => ((eater_n_eq p) isZ (eater_0 p)) )`)
 
-compile(`(_cloj (x: Nat) : Nat = (y: Nat = Zero) y)`)
+compile(`(_cloj (x: Nat) : Nat = (y : Nat = Zero) y)`)
 compile(`(_cloj2 : ((x:Nat) -> Nat ) = (x: Nat): Nat => x)`)
 
 compile(`( EQ.tran (T: Type, a: T, b: T, c: T, e1: (EQ T a b), e2: (EQ T b c)) : (EQ T a c) = (e2 ((x: T) : Type => (EQ T a x)) e1) )`)
@@ -628,25 +642,32 @@ compile(`( + (n: Nat, m: Nat) : Nat =
 compile(`(== (n: Nat, m: Nat) : Type = (EQ Nat n m))`)
 
 
-show(run($(EQ, Nat, Zero, Zero)))
-
-compile( `( Eq.cong (T: Type, a: T, b: T, f: ((x:T) -> Type), e: (EQ T a b)) : (EQ (f a) (f b)) = 
-
-  (e f (rfl Type (f a)) )
+compile( `( congruence (T: Type, U : Type,  a: T, b: T, f: ((x:T) -> U), e: (EQ T a b)) : (EQ U (f a) (f b)) =
+  (e ((x: T) : Type => (EQ U (f a) (f x))) (rfl U (f a)))
 )`)
-  
-
-  
-
-// compile(`( add.succ.0 (k: Nat) : (== (+ n1 k) (1+ (+ n0 k) )) = (rfl Nat (+ n1 k)) )`)
-
-// // compile(`( add.0.step (n: Nat, h: (EQ Nat (+ n Zero) n)) : (EQ Nat (+ (1+ n) Zero) (1+ n)) = ((rfl Nat ))`)
 
 
+compile(`( add.succ.0 (n: Nat, k: Nat) : (== (+ (1+ n) k) (1+ (+ n k) )) = (rfl Nat (+ (1+ n) k)) )`)
+
+compile(`( add.0.step (n: Nat, h: (== (+ n n0) n) )
+  : (==  (+ (1+ n) n0) (1+ n) )
+  = (congruence Nat Nat (+ n n0) n 1+ h)
+)`)
 
 
-// compile(`( add.0 (n: Nat) : (EQ Nat (+ n Zero) n) =
-//   match n
-//     | => (rfl Nat n0)
-//     | => (rfl Nat n0)
-// )`)
+compile(`( add.0 (n: Nat) : (== (+ n n0) n) =
+  match n
+    | => (rfl Nat n0)
+    | p => (add.0.step p (add.0 p) )
+)`)
+
+compile(`( add.0.symm (n: Nat) : (== n (+ n n0)) = ( EQ.symm Nat (+ n n0) n (add.0 n) ) )`)
+
+
+
+
+compile(`( add.comm (n: Nat, m: Nat) : (== (+ n m) (+ m n)) =
+  match n
+    | => (add.0.symm m)
+    | p => sorry
+)`)
