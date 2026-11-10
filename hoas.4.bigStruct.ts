@@ -1,8 +1,7 @@
-Error.stackTraceLimit = 100;
 
 export type F        = {names?: string[], length: number, f: (...t: Term[]) => Term}
 export type Sign     = {names?: string[], length: number, f: (...t: Term[]) => Term[]}
-export type Type     = { ty: Term, $: "Type",     }
+export type Uni      = { ty: Term, $: "Uni",       Quant : "Data" | "Type"}
 export type Arrow    = { ty: Term, $: "Arrow",     DOM: Sign, COD: F }
 export type ADT      = { ty: Term, $: "ADT",       variants:  Sign[]}
 export type adt      = { ty: Term, $: "adt",       tag: number, srcs: Term[] }
@@ -10,11 +9,14 @@ export type match    = { ty: Term, $: "match",     scr: Term, srcs: F[] }
 export type APP      = { ty: Term, $: "APP",       fn: Term, args: Term[] }
 export type Lam      = { ty: Term, $: "Lam",       name: string, fn: F}
 export type SYM      = { ty: Term, $: "SYM",       n: number | string }
-export type Term = Type | Arrow | ADT | adt | match | APP | Lam | SYM
+export type Term = Uni | Arrow | ADT | adt | match | APP | Lam | SYM
 
 export let Hole = {} as Term
-export const Type : Term = {$: "Type" ,ty: Hole}
+export const Type : Uni = {$: "Uni", Quant: "Type", ty: Hole}
 Type.ty = Type
+
+const Data : Uni = {$: "Uni", Quant: "Data", ty: Type}
+
 let rfl = {} as Term
 
 export function raise(msg: string): never {
@@ -134,7 +136,14 @@ function run(t:Term): Term{
 
 function checkEQ(a: Term, b: Term){
 
-  if ( a.$ == "APP" && b.$ == "APP" && a.fn == b.fn && zip(a.args, b.args, (x, y)=> x == y).every(v=>v) ) return
+  if (a.$ == "APP" && b.$ == "APP" && a.fn == b.fn && a.args.length == b.args.length) {
+    try {
+      zip(a.args, b.args, (x, y) => checkEQ(x, y))
+      return
+    } catch (e) {
+      if (!(e instanceof Error) || !e.message.startsWith("Structural mismatch:")) throw e
+    }
+  }
 
   [a,b] = [run(a), run(b)]
   if (a == b) return
@@ -528,6 +537,7 @@ function compile(s: string) : Term{
   }else raise(`unexpected syntactic form: ${JSON.stringify(tr)}`)
   
   let Ctx = { match, book, $, obj, }
+
   Function(...Object.keys(Ctx),"check", `Object.assign(obj, ${code})`)(...Object.values(Ctx), check)
   check(obj)
   store(obj, name)
@@ -586,7 +596,6 @@ let n2 =    compile("(n2 : Nat = (1+ (1+ Zero ))  )")
 let aro =   compile("(aro : Type = (x: Nat) -> Nat )")
 
 compile("(_uu : aro = pred )")
-
 
 
 /**
@@ -663,11 +672,33 @@ compile(`( add.0 (n: Nat) : (== (+ n n0) n) =
 
 compile(`( add.0.symm (n: Nat) : (== n (+ n n0)) = ( EQ.symm Nat (+ n n0) n (add.0 n) ) )`)
 
+compile(`(add.succ.p (n: Nat) : (== (1+ n) (+ n n1)) = match n
+  | => (rfl Nat n1)
+  | p =>(congruence Nat Nat (1+ p) (+ p n1) 1+ (add.succ.p p))  )`)
 
-
+compile(`( add.succ (n: Nat, m: Nat) : (== (1+ (+ n m)) (+ n (1+ m)) ) =
+  match n
+    | => (rfl Nat (1+ m))
+    | p => (congruence Nat Nat (1+ (+ p m)) (+ p (1+ m)) 1+ (add.succ p m))
+)`)
 
 compile(`( add.comm (n: Nat, m: Nat) : (== (+ n m) (+ m n)) =
   match n
     | => (add.0.symm m)
-    | p => sorry
+    | p => (EQ.tran Nat
+        (1+ (+ p m))
+        (1+ (+ m p))
+        (+ m (1+ p))
+        (congruence Nat Nat (+ p m) (+ m p) 1+ (add.comm p m))
+        (add.succ m p))
 )`)
+
+let E = compile(`( Empty : Type = | )`)
+
+
+
+compile(`( K : Type = (x: K) -> Empty)`)
+
+compile(`( KP (x: K) : Empty = (x x ) )`)
+
+compile(`( ep : Empty = (KP KP))`)
