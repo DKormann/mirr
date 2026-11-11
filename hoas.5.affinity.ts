@@ -211,7 +211,7 @@ function check(t:Term){
       if (A.length != args.length) raise(`Arity mismatch: expected ${A.length} arguments, got ${args.length}`)
       for (let i = 0; i < A.length; i++) {
         let newuse = go(args[i], cs, used, A[i], sig.slots[i].live)
-        if (sig.slots[i].live) used = used.concat(newuse)
+        if (sig.slots[i].live) used = newuse
       }
 
       return used
@@ -267,7 +267,7 @@ function check(t:Term){
       }
 
       case "SYM":{
-        if (t.live) { if (type.ty != Data && used.includes(t)) raise(`Symbol ${fmt(t)} already used: ${fmt(t)}`) }
+        if (live && t.live) { if (type.ty != Data && used.includes(t)) raise(`Symbol ${fmt(t)} already used: ${fmt(t)}`) }
         else{ if (live) raise(`Symbol ${fmt(t)} is not live`) }
         return used.concat(live? [t] : [])
       }
