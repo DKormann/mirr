@@ -210,7 +210,8 @@ function check(t:Term){
       let A = sig.f(...args)
       if (A.length != args.length) raise(`Arity mismatch: expected ${A.length} arguments, got ${args.length}`)
       for (let i = 0; i < A.length; i++) {
-        used = sig.slots[i].live ? go(args[i], cs, used, A[i], sig.slots[i].live) : used
+        let newuse = go(args[i], cs, used, A[i], sig.slots[i].live)
+        if (sig.slots[i].live) used = used.concat(newuse)
       }
 
       return used
@@ -255,12 +256,11 @@ function check(t:Term){
         let arg = asTag(t.scr, "SYM")
         let T = asTag(arg.ty, "ADT")
         let old : SYM = {...arg}
-
-        let newuses: SYM[] = used.slice()
+        let newuses: SYM[] = go(arg, cs, used, arg.ty, live)
         zip(T.variants, t.srcs, (v, s, i)=>{
           let vs = fillSign( v)
           Object.assign(arg, adt(T, i, ...vs))
-          newuses.push(... go(s.f(...vs), cs, used, type).filter(x=>!newuses.includes(x)))
+          newuses.push(... go(s.f(...vs), cs, used, type).filter(x=>![...newuses, ...vs].includes(x)))
         })
         Object.assign(arg, old)
         return newuses
@@ -286,7 +286,7 @@ function check(t:Term){
       }
 
       case "APP":{
-        console.log("check app:",fmt(t))
+
         let REC = searchStack(cs, t.fn)
         let aro = asTag(t.fn.ty, "Arrow")
         used = checkSig(t.args, aro.DOM)
@@ -295,7 +295,7 @@ function check(t:Term){
           if (!zip(REC.args, t.args, (a,b)=>wellFounded(a,b)).some(x=>x)) raise(`Non well-founded application detected`)
           return used
         }
-        else return go(t.fn, cs, used.concat(used), aro)
+        else return go(t.fn, cs, used, aro)
 
       }
 
