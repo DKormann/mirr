@@ -470,32 +470,34 @@ function compile(s: string) : Term{
   if (typeof tr == "string") raise(`unexpected string term at top level: ${tr}`)
 
   let name = asIden(tr[0])
+  if (book.has(name)) raise(`Name already defined: ${name}`)
 
-  let code : string
-  if (Array.isArray(tr[1])){
-    book.set(name, obj)
-    if (tr[2] != ":") raise(`expected a ":" after the argument list, but got: ${JSON.stringify(tr[2])}`)
-    if (tr[4] != "=") raise(`expected a "=" after the return type, but got: ${JSON.stringify(tr[4])}`)
-    let args = asSign(tr[1], ctx)
-    ctx = ctx.concat(args.map(a=>a.name))
-    let R =  goTerm(tr[3], ctx)
-    code = mkLam(args, R, goTerm(tr.slice(5), ctx, R))
-  } else if (tr[1] == ":"){
-    let ty = goTerm(tr[2], ctx)
-    if (tr[2] == "Type" || tr[2] == "Data") book.set(name,obj)
-    code = `({...${goTerm(tr.slice(4), ctx, ty)}, ty: ${ty} })`
-  }else raise(`unexpected syntactic form: ${JSON.stringify(tr)}`)
-  let Ctx = { match, book, $, obj, }
-  try{
+  let code = ""
+  try {
+    if (Array.isArray(tr[1])){
+      book.set(name, obj)
+      if (tr[2] != ":") raise(`expected a ":" after the argument list, but got: ${JSON.stringify(tr[2])}`)
+      if (tr[4] != "=") raise(`expected a "=" after the return type, but got: ${JSON.stringify(tr[4])}`)
+      let args = asSign(tr[1], ctx)
+      ctx = ctx.concat(args.map(a=>a.name))
+      let R =  goTerm(tr[3], ctx)
+      code = mkLam(args, R, goTerm(tr.slice(5), ctx, R))
+    } else if (tr[1] == ":"){
+      let ty = goTerm(tr[2], ctx)
+      if (tr[2] == "Type" || tr[2] == "Data") book.set(name,obj)
+      code = `({...${goTerm(tr.slice(4), ctx, ty)}, ty: ${ty} })`
+    }else raise(`unexpected syntactic form: ${JSON.stringify(tr)}`)
+
+    let Ctx = { match, book, $, obj, }
     Function(...Object.keys(Ctx),"check", `Object.assign(obj, ${code})`)(...Object.values(Ctx), check)
-  }catch(e){
-    book.delete(name)
+    book.set(name,obj)
+    check(obj)
+    store(obj, name)
+    return obj
+  } catch(e) {
+    if (book.get(name) == obj) book.delete(name)
     raise(`Error during compilation of ${name}: ${e}\nCode that caused the error: ${code}`)
   }
-  book.set(name,obj)
-  check(obj)
-  store(obj, name)
-  return obj
 }
 
 function decline(s: string){
@@ -511,25 +513,25 @@ compile("(BOOL : Data = | () | () )")
 compile("(True : BOOL = (#1 ) )")
 compile("(False : BOOL = (#0 ) )")
 
-compile("(_f (x:Type) : Type = x)")
-compile("(_f (x:BOOL) : BOOL = match x | => x | => x)")
-compile("(_f (x:BOOL) : BOOL = match x | => True | => False)")
-decline("(_f (x:BOOL) : BOOL = match x | => True | => NULL)")
-decline("(_f (x:BOOL) : BOOL = match x | => NULL | => True)")
+compile("(_type_identity (x:Type) : Type = x)")
+compile("(_bool_identity (x:BOOL) : BOOL = match x | => x | => x)")
+compile("(_bool_rebuild (x:BOOL) : BOOL = match x | => True | => False)")
+decline("(_bad_bool_branch_right (x:BOOL) : BOOL = match x | => True | => NULL)")
+decline("(_bad_bool_branch_left (x:BOOL) : BOOL = match x | => NULL | => True)")
 
 compile("(TF (x:BOOL) : Type = match x | => NULL | => BOOL)")
 compile("(_tfm (x:BOOL) : (TF x) = match x | => Null | => True)")
 
 compile("(SIG : Type = | (w: BOOL, y: (TF w) ) )")
 compile("(_sig1 : SIG = (#0 True True) ) ")
-decline("(_sig2 : SIG = (#0 True) )")
-decline("(_sig2 : SIG = (#0 True Null) )")
-decline("(_sig2 : SIG = (#0 False True) )")
-compile("(_sig2 : SIG = (#0 False Null) )")
+decline("(_sig_missing_field : SIG = (#0 True) )")
+decline("(_sig_bad_true_payload : SIG = (#0 True Null) )")
+decline("(_sig_bad_false_payload : SIG = (#0 False True) )")
+compile("(_sig_false_null : SIG = (#0 False Null) )")
 
 compile("(WRP (T: Type): Type = | (x: T) )")
-compile("(_wrpB : (WRP BOOL) = (#0 True) )")
-decline("(_wrpB : (WRP NULL) = (#0 True) )")
+compile("(_wrp_bool : (WRP BOOL) = (#0 True) )")
+decline("(_bad_wrp_null : (WRP NULL) = (#0 True) )")
 
 let Nat  = compile("(Nat: Data = | () | (p: Nat) )")
 let Zero = compile("(Zero : Nat = (#0 ) )")
@@ -545,13 +547,13 @@ let n2 =    compile("(n2 : Nat = (S (S Zero ))  )")
 let aro =   compile("(aro : Type = (x: Nat) -> Nat )")
 
 decline("(NDT : Nat = Type)")
-decline("(DID : Data = Type)")
+decline("(_bad_data_type : Data = Type)")
 compile("(TID : Data = Nat)")
 compile("(DID : Type = Type)")
 compile("(_uu : aro = pred )")
 
-compile( `( _oneof (n: Nat) : (| ( x : Nat )  | ( y : BOOL ) ) = (#0 n) ) ` )
-decline( `( _oneof (n: Nat) : (| ( x : Nat )  | ( y : BOOL ) ) = (#1 n) ) ` )
+compile( `( _oneof_nat (n: Nat) : (| ( x : Nat )  | ( y : BOOL ) ) = (#0 n) ) ` )
+decline( `( _bad_oneof_bool (n: Nat) : (| ( x : Nat )  | ( y : BOOL ) ) = (#1 n) ) ` )
 
 compile( `( _typeid (T: Type) :Type = T)`)
 compile( `( _dataid (T: Data) :Data = T)`)
@@ -581,20 +583,20 @@ compile(`(pr0 (n: Nat ) : (EQ Nat Zero Zero) =  match n | => (rfl Nat n) | p => 
 
 compile (" (NPred : Type = (n: Nat) -> Type )")
 
-compile(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) =  (h n) ) `)
-decline(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) =  (h Zero) ) `)
+compile(`(_apply_predicate (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) =  (h n) ) `)
+decline(`(_bad_apply_zero (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) =  (h Zero) ) `)
 
-compile(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) = match n | => (h n) | p => (h n) ) `)
-decline(`(_f (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) = match n | => (h n) | p => (h p) ) `)
+compile(`(_apply_predicate_match (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) = match n | => (h n) | p => (h n) ) `)
+decline(`(_bad_apply_predecessor (n: Nat, P:NPred, h: ((x: Nat) -> (P x))) : (P n) = match n | => (h n) | p => (h p) ) `)
 
 compile(`(isZ (n: Nat) : Type = (EQ Nat Zero n))`)
-compile("(_p (n: Nat) : Type = (isZ (eater n))) ")
+compile("(_eater_is_zero_type (n: Nat) : Type = (isZ (eater n))) ")
 
 compile("(eater_n_eq (n: Nat): (EQ Nat (eater n) (eater (S n)) ) = (rfl Nat (eater n)) )")
 
-decline("(_p (n: Nat): (EQ Nat (eater n) (eater (S n)) ) = (rfl Nat (pred n)) )")
-decline("(_p (n: Nat): (EQ Nat Zero n1) = (rfl Nat Zero)")
-compile(`(_p (n: Nat ) : ( EQ Nat (eater n) (eater (S n) ) ) = ( eater_n_eq n ) )`)
+decline("(_bad_eater_proof (n: Nat): (EQ Nat (eater n) (eater (S n)) ) = (rfl Nat (pred n)) )")
+decline("(_bad_zero_one_proof (n: Nat): (EQ Nat Zero n1) = (rfl Nat Zero)")
+compile(`(_eater_proof (n: Nat ) : ( EQ Nat (eater n) (eater (S n) ) ) = ( eater_n_eq n ) )`)
 
 compile(`(eater_0 (n: Nat) : (isZ (eater n)) =  match n | => (rfl Nat Zero) | p => ((eater_n_eq p) isZ (eater_0 p)) )`)
 
@@ -603,10 +605,10 @@ compile(`(_cloj2 : ((x:Nat) -> Nat ) = (x: Nat): Nat => x)`)
 
 compile(`( EQ.tran (T: Type, a: T, b: T, c: T, e1: (EQ T a b), e2: (EQ T b c)) : (EQ T a c) = (e2 ((x: T) : Type => (EQ T a x)) e1) )`)
 
-compile(`(_use2T (T: Type) : Type = (x: T) -> T)`)
+compile(`(_type_arrow (T: Type) : Type = (x: T) -> T)`)
 
-decline(`(_use2T (T: Type, P: ((a:Type, b: Type)-> Type ) ) : Type = (P T T))`)
-decline(`(_use2T (-T: Type, P: ((a:Type, b: Type)-> Type ) ) : Type = (P T T))`)
+decline(`(_bad_duplicate_type (T: Type, P: ((a:Type, b: Type)-> Type ) ) : Type = (P T T))`)
+decline(`(_bad_use_dead_type (-T: Type, P: ((a:Type, b: Type)-> Type ) ) : Type = (P T T))`)
 
 compile(`(_use2Nat (x: Nat, P: ((a: Nat, b: Nat) -> Type)) : Type = (P x x))`)
 decline(`( _death (-x:Nat) : Nat = x)`)
@@ -618,13 +620,13 @@ decline(`(eAdt : Data = | (x: N2N))`)
 compile(`(tAdt : Type = | (x: N2N))`)
 compile(`(_gAdt : Data = | (x: Nat))`)
 
-decline(`(_use2tadt (x: tAdt) : (| (x: tAdt, y: tAdt))  = (#0 x x))`)
-compile(`(_use2tadt (x: tAdt) : (| (x: tAdt, y: Nat))  = (#0 x n0))`)
+decline(`(_bad_duplicate_tadt (x: tAdt) : (| (x: tAdt, y: tAdt))  = (#0 x x))`)
+compile(`(_use_tadt_once (x: tAdt) : (| (x: tAdt, y: Nat))  = (#0 x n0))`)
 
 compile(`(_usedeadT (-T: Type, x: T) : T = x)`)
 
-compile(`(_calluseT (x:Nat): Nat = (_usedeadT Nat x))`)
-decline(`(_calluseT (x:Nat): Nat = (_usedeadT BOOL x))`)
+compile(`(_call_dead_type (x:Nat): Nat = (_usedeadT Nat x))`)
+decline(`(_bad_call_dead_type (x:Nat): Nat = (_usedeadT BOOL x))`)
 
 
 compile(`(_passDead(-T: Type, -x:T, f: ((-x:T)->T) ) : T = (f x) )`)
@@ -637,14 +639,14 @@ compile(`( K : Type = (-x: K) -> Empty)`)
 compile(`( Kp (xt: K) : Empty = (xt xt) )`)
 
 decline(`( ep: Empty = (Kp Kp) )`)
-decline(`( Kp (-xt: K) : Empty = (xt xt) )`)
+decline(`( _bad_Kp_dead (-xt: K) : Empty = (xt xt) )`)
 
 compile(`( Kl  : Type = (x: Kl) -> Empty)`)
-decline(`( Klp (xt: Kl)  : Empty = (xt xt))`)
-decline(`( Klp (-xt: Kl) : Empty = (xt xt))`)
-compile(`( Klp (xt: Kl) : Kl = xt)`)
-compile(`( Klp (xt: Kl, yt: Kl) : Empty = (xt yt))`)
-decline(`( Klp (xt: Kl, -yt: Kl) : Empty = (xt yt))`)
+decline(`( _bad_Kl_self_apply (xt: Kl)  : Empty = (xt xt))`)
+decline(`( _bad_Kl_dead_self_apply (-xt: Kl) : Empty = (xt xt))`)
+compile(`( Kl_identity (xt: Kl) : Kl = xt)`)
+compile(`( Kl_apply (xt: Kl, yt: Kl) : Empty = (xt yt))`)
+decline(`( _bad_Kl_apply_dead (xt: Kl, -yt: Kl) : Empty = (xt yt))`)
 
 compile(`( EQ.symm (-T: Type, a: T, b: T, e: (EQ T a b)) : (EQ T b a) =
   (e
@@ -758,9 +760,9 @@ compile(`(
     Null
 )`)
 
-compile(`(Fam (n: Nat) : Type = Empty)`)
+decline(`(Fam (n: Nat) : Type = Empty)`)
 
-compile(`(
-  emptyRebind : Empty =
+decline(`(
+  _bad_empty_rebind : Empty =
     (witness Zero)
 )`)
