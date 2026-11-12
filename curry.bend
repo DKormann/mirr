@@ -100,3 +100,6 @@ def sym_invol(-A: Type, -a: A, -b: A, e: {a == b : A})
       -> {Equal.sym(A, b, a, Equal.sym(A, a, b, e)) == e : {a == b : A}}:
     %p@e : {Equal.sym(A, _, a, Equal.sym(A, a, _, p)) == p : {a == _ : A}}
     {==}
+
+type Box is Data:
+  K {-x: Nat}

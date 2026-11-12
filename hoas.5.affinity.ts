@@ -33,6 +33,8 @@ let fillSign = ( s: Sign): SYM[] => {
   return vs
 }
 
+
+
 let book = new Map(Object.entries({Type, Data, rfl, Hole}))
 let names = new Map(Array.from(book.entries()).map(([k, v]) => [v, k]))
 
@@ -47,23 +49,20 @@ export function fmt(t: Term, def?: boolean){
   let stck = new Set<Term>() 
   function pln(t:Term, def? : boolean):string{
     if (names.has(t) && !def) return names.get(t)!
-    function gofn(f: F, argty?:Term): string{
-      let s = f.names.map(name => ({ $: "SYM", name, live: true, ty: argty } as SYM))
-      return `({${s.map(v => pln(v)).join(', ')}}) => ${pln(f.f(...s))}`
-    }
-
     if (t.$ == "Uni") return `type${t.Quant}`
-    if (t.$ == "ADT") return  t.variants.map(v=> `\n  | {${ fillSign(v).map(v =>  pln(v)+": "+ pln(v.ty)).join(', ')}}`).join('') 
-    if (t.$ == "adt") return `#${t.tag}(${t.srcs.map(x=> pln(x)).join(', ')})`
-    if (t.$ == "APP") {
-      return `(${pln(t.fn)} ${ t.args.map(x => pln(x)).join(' ')})`}
+    if (t.$ == "ADT") return  t.variants.map(v=> `\n  | {${ fillSign(v).map(v =>  (v.live ? "" : "-") + pln(v)+": "+ pln(v.ty)).join(', ')}}`).join('') 
+    if (t.$ == "adt") return `(#${t.tag} ${t.srcs.map(x=> pln(x)).join(', ')})`
+    if (t.$ == "APP") return `(${pln(t.fn)} ${ t.args.map(x => pln(x)).join(' ')})`
     if (t.$ == "Arrow"){
       let vs = fillSign(t.DOM)
       return `(${vs.map(v => `${pln(v)} : ${pln(v.ty)}`).join(', ')}) -> ${pln(t.COD.f(...vs))}`
     }
 
     if (t.$ == "SYM") return t.name ?? "?"
-    if (t.$ == "match") return `match ${pln(t.scr)}:${t.srcs.map(x=> `\n  | ${gofn(x)}`).join('')}`
+    if (t.$ == "match") return `match ${pln(t.scr)}:${t.srcs.map(f=> {
+      let s = f .names.map(name => ({ $: "SYM", name, live: true } as SYM))
+      return `\n  | ${s.map(v => pln(v)).join(', ')} => ${pln(f.f(...s))}`
+    }).join('')}`
 
     if (t.$ == "Lam") {
       if (stck.has(t)) return `[rec ${names.get(t) ?? t.$}]`
@@ -114,6 +113,7 @@ function checkEQ(a: Term, b: Term){
     b = b as ADT
     if (a.variants.length != b.variants.length) raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
     zip(a.variants, b.variants, (v1, v2)=>{
+      zip(v1.slots, v2.slots, (x, y) => { if (x.live != y.live) raise(`Live missmatch: ${x.name} vs ${y.name}`) })
       let vs = fillSign( v1)
       zip(v1.f(...vs), v2.f(...vs), (a,b)=> checkEQ(a,b))
     })
@@ -283,6 +283,10 @@ type synt = string | synt []
 function parse (input: string): synt{
   let idx = 0
   let toks: string[] = []
+
+  input = input.split("\n") .map(l => l.trim()) .filter(l => !l.startsWith("//")) .join("\n")
+
+
   function parseSym(): true | undefined {
     for (let s of [ "(", ")", ":", "->", "=>", ",", "|", "-", "+" ]){
       if (input.startsWith(s, idx)){
@@ -411,6 +415,14 @@ function compile(s: string) : Term{
         let dom = asSign(tr[0], ctx)
         return `({ty: book.get("Type"), $: "Arrow", DOM: ${mkSign(dom)}, COD: ${mkF(dom, goTerm(tr.slice(2), ctx.concat(dom.map(a=>a.name))))} })`
       }
+      if (Array.isArray(tr[0]) && tr[0].includes("=")){
+        let letr = tr[0]
+        let vname = asIden(letr[0])
+        if (letr[1] != ":") raise(`expected a ":" after the let binding, but got: ${JSON.stringify(tr[1])}`)
+        let vtype = goTerm(letr[2], ctx)
+        if (letr[3] != "=") raise(`expected a "=" after the type annotation in the let binding, but got: ${JSON.stringify(tr[3])}`)
+        return `(${vname} => ${goTerm(tr.slice(1), ctx.concat([vname]))})(${ goTerm(letr[4], ctx, vtype)})`
+      }
 
       if (tr.includes("=>")){
         let args = asSign(tr[0], ctx)
@@ -421,14 +433,6 @@ function compile(s: string) : Term{
         return mkLam(args, R, B)
       }
 
-      if (Array.isArray(tr[0]) && tr[0].includes("=")){
-        let letr = tr[0]
-        let vname = asIden(letr[0])
-        if (letr[1] != ":") raise(`expected a ":" after the let binding, but got: ${JSON.stringify(tr[1])}`)
-        let vtype = goTerm(letr[2], ctx)
-        if (letr[3] != "=") raise(`expected a "=" after the type annotation in the let binding, but got: ${JSON.stringify(tr[3])}`)
-        return `(${vname} => ${goTerm(tr.slice(1), ctx.concat([vname]))})(${ goTerm(letr[4], ctx, vtype)})`
-      }
 
       if (typeof tr[0] == "string" && tr[0].startsWith("#")){
         let idx = parseInt(tr[0].slice(1))
@@ -766,3 +770,9 @@ decline(`(
   _bad_empty_rebind : Empty =
     (witness Zero)
 )`)
+
+
+compile(`( DeadBox (T: Type) : Type = | (-x: T) )`)
+compile(`( LiveBox (T: Type) : Type = | (x: T) )`)
+compile(`( mkDead (-T : Type, -x: T) : (DeadBox T) = (#0 x))`)
+decline(`( castBox (-T: Type, b: (DeadBox T)) : (LiveBox T) = b )`)
