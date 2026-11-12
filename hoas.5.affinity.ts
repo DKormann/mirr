@@ -165,7 +165,7 @@ book.set("sorry", sorry)
 function check(t:Term){
 
   type CallStack = { f: Term, args: Term[]} []
-  function go(t:Term, cs: CallStack, used: SYM[], ty?:Term, live = true) : SYM[]{
+  function go(t:Term, cs: CallStack, used: SYM[], ty:Term | undefined, live : boolean) : SYM[]{
     function checkSig(args: Term[], sig: Sign) : SYM[]{
       let A = sig.f(...args)
       if (A.length != args.length) raise(`Arity mismatch: expected ${A.length} arguments, got ${args.length}`)
@@ -209,7 +209,7 @@ function check(t:Term){
       zip(T.variants, t.srcs, (v, s, i)=>{
         let vs = fillSign( v)
         Object.assign(arg, adt(T, i, ...vs))
-        newuses.push(... go(s.f(...vs), cs, used, type).filter(x=>![...newuses, ...vs].includes(x)))
+        newuses.push(... go(s.f(...vs), cs, used, type, live).filter(x=>![...newuses, ...vs].includes(x)))
       })
       Object.assign(arg, old)
       used = newuses
@@ -228,7 +228,7 @@ function check(t:Term){
       if (searchStack(cs, t)) raise(`Non well-founded lambda detected`)
       let aro = asTag(t.ty, "Arrow")
       let vs = fillSign(aro.DOM)
-      return go(t.fn.f(...vs),  [...cs, { f: t, args: vs }], used, aro.COD.f(...vs)).filter(x=> !vs.includes(x))
+      return go(t.fn.f(...vs),  [...cs, { f: t, args: vs }], used, aro.COD.f(...vs), live).filter(x=> !vs.includes(x))
 
     } else if (t.$ == "APP"){
       let REC = searchStack(cs, t.fn)
@@ -252,7 +252,7 @@ function check(t:Term){
     return used
 
   }
-  go(t, [], [])
+  go(t, [], [], undefined, true)
   checked.add(t)
 }
 
