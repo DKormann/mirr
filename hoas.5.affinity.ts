@@ -240,7 +240,7 @@ function check(t:Term){
           let A = REC.args[i]
           let a = t.args[i]
           if (A.$ == "adt" && A.srcs.some(el => el == a)) break
-          if (A != a) raise(`Non well-founded application detected: ${fmt(a)}\nrecursive arguments are checked from left and must match until some argument decreases`)
+          if (A != a || i == REC.args.length - 1) raise(`Non well-founded application detected: ${fmt(a)}\nrecursive arguments are checked from left and must match until some argument decreases`)
         }
       }
       else return go(t.fn, cs, used, aro, live)
@@ -748,3 +748,19 @@ decline(`(
 )`)
 
 decline(`(_badbad : Empty = _badbad)`)
+
+
+
+compile(`(Fam (n: Nat) : Type = NULL)`)
+
+compile(`(
+  witness (n: Nat) : (Fam n) =
+    Null
+)`)
+
+compile(`(Fam (n: Nat) : Type = Empty)`)
+
+compile(`(
+  emptyRebind : Empty =
+    (witness Zero)
+)`)
