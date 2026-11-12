@@ -18,6 +18,9 @@ Type.ty = Type
 const Data : Uni = {$: "Uni", Quant: 1, ty: Type}
 let rfl = {} as Term
 
+let sorry = {} as Term
+
+
 export function raise(msg: string): never {
   throw new Error(msg)
 }
@@ -35,7 +38,7 @@ let fillSign = ( s: Sign): SYM[] => {
 
 
 
-let book = new Map(Object.entries({Type, Data, rfl, Hole}))
+let book = new Map(Object.entries({Type, Data, rfl, sorry}))
 let names = new Map(Array.from(book.entries()).map(([k, v]) => [v, k]))
 
 function store(t: Term, name: string){
@@ -159,8 +162,6 @@ function asTag <$ extends Term["$"]>(t: Term, tag: $) : Term & {$: $}{
 
 let checked = new Set<Term> ()
 
-let sorry = {} as Term
-book.set("sorry", sorry)
 
 function check(t:Term){
 
@@ -177,10 +178,7 @@ function check(t:Term){
       return used
     }
 
-    if (t == sorry){
-      console.warn(`Sorry: ${fmt(ty ?? Hole)}`)
-      return used
-    }
+    if (t == sorry) raise(`Sorry: ${fmt(ty ?? Hole)}`)
 
     if (ty && t.ty != Hole) {
       if (ty.$ == "Uni" && ty.Quant == 0 && t.ty.$ == "Uni" && t.ty.Quant == 1) {}
@@ -188,6 +186,7 @@ function check(t:Term){
     }
 
     if (t == rfl) return used
+    if (!t.$) raise(`Unexpected term with tag ${t.$}: ${fmt(t)}`)
     function searchStack(c: CallStack, t: Term){ return c.find(x=>x.f == t) }
 
     let type = t.ty
@@ -245,9 +244,12 @@ function check(t:Term){
       }
       else return go(t.fn, cs, used, aro, live)
 
-    } else if (t.$ == "Arrow"){ if (type == Data) raise(`Cannot construct Arrow of type Data`)
+    } else if (t.$ == "Arrow"){
+      asTag(type, "Uni")
+      if (type == Data) raise(`Cannot construct Arrow of type Data`)
 
     } else if (t.$ == "ADT"){
+      asTag(type, "Uni")
       if (type == Data)
         for(let v of t.variants)
           for (let s of fillSign(v))
@@ -377,7 +379,7 @@ function compile(s: string) : Term{
   function goTerm(tr: synt, ctx: Ctx, ty?: string): string{
 
     if (typeof tr == "string") {
-      if (tr == "sorry") return `book.get("sorry")`
+
       if (!ctx.includes(tr)) {
         if (book.has(tr)) return `book.get("${tr}")`
         raise(`unbound identifier: ${tr}`)}
@@ -390,7 +392,7 @@ function compile(s: string) : Term{
         return `({
           $: "match",
           scr: ${goTerm(tr[1], ctx)},
-          ty: book.get("Hole"),
+          ty: Hole,
           srcs: [${splitList(tr, "|").slice(1).map(arm => {
             let [pat, expr] = splitList(arm, "=>")
             if (typeof pat == "string") pat = [pat]
@@ -492,7 +494,7 @@ function compile(s: string) : Term{
       code = `({...${goTerm(tr.slice(4), ctx, ty)}, ty: ${ty} })`
     }else raise(`unexpected syntactic form: ${JSON.stringify(tr)}`)
 
-    let Ctx = { match, book, $, obj, }
+    let Ctx = { match, book, Hole, $, obj, }
     Function(...Object.keys(Ctx),"check", `Object.assign(obj, ${code})`)(...Object.values(Ctx), check)
     book.set(name,obj)
     check(obj)
@@ -537,18 +539,16 @@ compile("(WRP (T: Type): Type = | (x: T) )")
 compile("(_wrp_bool : (WRP BOOL) = (#0 True) )")
 decline("(_bad_wrp_null : (WRP NULL) = (#0 True) )")
 
-let Nat  = compile("(Nat: Data = | () | (p: Nat) )")
-let Zero = compile("(Zero : Nat = (#0 ) )")
-let Succ = compile("(S (n: Nat) : Nat = (#1 n) )")
-let pred = compile("(pred (n: Nat) : Nat = match n | => Zero | p => p )")
+compile("(Nat: Data = | () | (p: Nat) )")
+compile("(Zero : Nat = (#0 ) )")
+compile("(S (n: Nat) : Nat = (#1 n) )")
+compile("(pred (n: Nat) : Nat = match n | => Zero | p => p )")
 
-// compileFN("( ppef : (EQ Nat Zero Zero) )")
-
-let eater = compile("(eater (n: Nat): Nat = match n | => Zero | p => (eater p) )")
-let n0 =    compile("(n0 : Nat = Zero)")
-let n1 =    compile("(n1 : Nat = (S Zero) )")
-let n2 =    compile("(n2 : Nat = (S (S Zero ))  )")
-let aro =   compile("(aro : Type = (x: Nat) -> Nat )")
+compile("(eater (n: Nat): Nat = match n | => Zero | p => (eater p) )")
+compile("(n0 : Nat = Zero)")
+compile("(n1 : Nat = (S Zero) )")
+compile("(n2 : Nat = (S (S Zero ))  )")
+compile("(aro : Type = (x: Nat) -> Nat )")
 
 decline("(NDT : Nat = Type)")
 decline("(_bad_data_type : Data = Type)")
@@ -776,3 +776,16 @@ compile(`( DeadBox (T: Type) : Type = | (-x: T) )`)
 compile(`( LiveBox (T: Type) : Type = | (x: T) )`)
 compile(`( mkDead (-T : Type, -x: T) : (DeadBox T) = (#0 x))`)
 decline(`( castBox (-T: Type, b: (DeadBox T)) : (LiveBox T) = b )`)
+
+
+decline(`( fromrfl : Empty = Hole )`)
+
+decline(`( fromrfl : Empty = rfl )`)
+decline(`( fromrfl (x:Nat): Empty = rfl )`)
+// decline(`(badFormation : Type = (x: Null) -> Null)`)
+
+decline(`(false_arrow : Empty = (x: NULL) -> NULL)`)
+decline(`(false_adt : Empty = |)`)
+
+decline(`(boom (n: Nat) : Empty = sorry)`)
+// decline(`(badID (n:Null): Null = n)`)
