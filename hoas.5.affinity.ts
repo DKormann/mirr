@@ -236,8 +236,12 @@ function check(t:Term){
       used = checkSig(t.args, aro.DOM)
       checkEQ(type, aro.COD.f(...t.args))
       if (REC){
-        if (!REC.args.some((A, i) => (A.$ == "adt" && A.srcs.some(el => el == t.args[i]))))
-          raise(`Non well-founded application detected`)
+        for (let i = 0; i < REC.args.length; i++){
+          let A = REC.args[i]
+          let a = t.args[i]
+          if (A.$ == "adt" && A.srcs.some(el => el == a)) break
+          if (A != a) raise(`Non well-founded application detected: ${fmt(a)}\nrecursive arguments are checked from left and must match until some argument decreases`)
+        }
       }
       else return go(t.fn, cs, used, aro, live)
 
@@ -466,10 +470,10 @@ function compile(s: string) : Term{
   if (typeof tr == "string") raise(`unexpected string term at top level: ${tr}`)
 
   let name = asIden(tr[0])
-  book.set(name, obj)
 
   let code : string
   if (Array.isArray(tr[1])){
+    book.set(name, obj)
     if (tr[2] != ":") raise(`expected a ":" after the argument list, but got: ${JSON.stringify(tr[2])}`)
     if (tr[4] != "=") raise(`expected a "=" after the return type, but got: ${JSON.stringify(tr[4])}`)
     let args = asSign(tr[1], ctx)
@@ -478,6 +482,7 @@ function compile(s: string) : Term{
     code = mkLam(args, R, goTerm(tr.slice(5), ctx, R))
   } else if (tr[1] == ":"){
     let ty = goTerm(tr[2], ctx)
+    if (tr[2] == "Type" || tr[2] == "Data") book.set(name,obj)
     code = `({...${goTerm(tr.slice(4), ctx, ty)}, ty: ${ty} })`
   }else raise(`unexpected syntactic form: ${JSON.stringify(tr)}`)
   let Ctx = { match, book, $, obj, }
@@ -487,6 +492,7 @@ function compile(s: string) : Term{
     book.delete(name)
     raise(`Error during compilation of ${name}: ${e}\nCode that caused the error: ${code}`)
   }
+  book.set(name,obj)
   check(obj)
   store(obj, name)
   return obj
@@ -711,3 +717,34 @@ compile(`( add.comm (n: Nat, m: Nat) : (== (+ n m) (+ m n)) =
 compile(`( AND (A: Type, B: Type) : Type  = | (a: A, b: B))`)
 
 compile(`( _f (T: Type, P: ((x:Type) -> Type), a: (P T) ) : (P T) = a )`)
+
+compile(`(
+  BadM (m: Nat) : Type =
+    match m
+      | => NULL
+      | q => Empty
+)`)
+
+compile(`(
+  BadTy (n: Nat, m: Nat) : Type =
+    match n
+      | => (BadM m)
+      | p => Empty
+)`)
+
+decline(`(
+  badRec (n: Nat, m: Nat) : (BadTy n m) =
+    match n
+      | => (
+          match m
+            | => Null
+            | q => (badRec (S q) q)
+        )
+      | p => (
+          match p
+            | => (badRec p (S p))
+            | r => (badRec p (S p))
+        )
+)`)
+
+decline(`(_badbad : Empty = _badbad)`)
