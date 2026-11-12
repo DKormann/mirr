@@ -15,9 +15,7 @@ export type Term = Uni | Arrow | ADT | adt | match | APP | Lam | SYM
 export let Hole = {} as Term
 export const Type : Uni = {$: "Uni", Quant: 0, ty: Hole}
 Type.ty = Type
-
 const Data : Uni = {$: "Uni", Quant: 1, ty: Type}
-
 let rfl = {} as Term
 
 export function raise(msg: string): never {
@@ -31,24 +29,12 @@ function zip<T,S,U>(ts: T[], s: S[], f: (t: T, s: S, i: number)=>U): U[] {
 
 let fillSign = ( s: Sign): SYM[] => {
   let vs = s.slots.map(slot => ({ $: "SYM", name: slot.name, live: slot.live, ty: Hole } as SYM))
-  let tys = s.f(...vs)
-
-  while(vs.some(v => v.ty == Hole)){
-    zip(tys, vs, (ty, v)=> Object.assign(v, {ty}))
-  }
+  zip(s.f(...vs), vs, (ty, v)=> v.ty = ty)
   return vs
 }
 
-
-let argnames = (f: Function) =>{
-  let s = f.toString()
-  let match = s.match(/\(([^)]*)\)/)
-  if (!match) return []
-  return match[1].split(',').map(x => x.trim()).slice(0, f.length)
-}
-
-let names = new Map<Term, string>()
 let book = new Map(Object.entries({Type, Data, rfl, Hole}))
+let names = new Map(Array.from(book.entries()).map(([k, v]) => [v, k]))
 
 function store(t: Term, name: string){
   names.set(t, name)
@@ -59,27 +45,15 @@ function store(t: Term, name: string){
 export function fmt(t: Term, def?: boolean){
 
   let stck = new Set<Term>() 
-
   function pln(t:Term, def? : boolean):string{
-
     if (names.has(t) && !def) return names.get(t)!
-
-
     function gofn(f: F, argty?:Term): string{
       let s = f.names.map(name => ({ $: "SYM", name, live: true, ty: argty } as SYM))
       return `({${s.map(v => pln(v)).join(', ')}}) => ${pln(f.f(...s))}`
     }
 
-    function gosig(s: Sign): string{
-      return fillSign( s).map(v =>  pln(v)+": "+ pln(v.ty)).join(', ')
-    }
-
-    if (t == Hole) return '[_]'
-    if (t == sorry) return 'sorry'
-    if (t == rfl) return 'rfl'
-
     if (t.$ == "Uni") return `type${t.Quant}`
-    if (t.$ == "ADT") return  t.variants.map(v=> `\n  | {${gosig(v)}}`).join('') 
+    if (t.$ == "ADT") return  t.variants.map(v=> `\n  | {${ fillSign(v).map(v =>  pln(v)+": "+ pln(v.ty)).join(', ')}}`).join('') 
     if (t.$ == "adt") return `#${t.tag}(${t.srcs.map(x=> pln(x)).join(', ')})`
     if (t.$ == "APP") {
       return `(${pln(t.fn)} ${ t.args.map(x => pln(x)).join(' ')})`}
@@ -91,7 +65,6 @@ export function fmt(t: Term, def?: boolean){
     if (t.$ == "SYM") return t.name ?? "?"
     if (t.$ == "match") return `match ${pln(t.scr)}:${t.srcs.map(x=> `\n  | ${gofn(x)}`).join('')}`
 
-    
     if (t.$ == "Lam") {
       if (stck.has(t)) return `[rec ${names.get(t) ?? t.$}]`
       stck.add(t)
@@ -108,17 +81,13 @@ export function fmt(t: Term, def?: boolean){
 }
 
 function run(t:Term): Term{
-  if (t.$ == undefined) return t
-
   if (t.$ == "APP"){
     let fn = run(t.fn)
     if (fn.$ == "Lam") return run(fn.fn.f(...t.args))
-  }
-  if (t.$ == "match"){
+  }else if (t.$ == "match"){
     let arg = run(t.scr)
     if (arg.$ == "adt") return run(t.srcs[arg.tag].f(...arg.srcs))
   }
-  
   return t
 }
 
@@ -181,12 +150,6 @@ function checkEQ(a: Term, b: Term){
   if (a.$ == "Lam" || a.$ == "SYM") raise(`Structural mismatch: ${fmt(a)} vs ${fmt(b)}`)
 }
 
-function wellFounded(A: Term, a: Term):boolean{
-  if (A == a) return false 
-
-  if (A.$ == "adt") for(let el of A.srcs) if (el == a) return true
-  return false
-}
 
 function asTag <$ extends Term["$"]>(t: Term, tag: $) : Term & {$: $}{
   t = run(t)
@@ -201,19 +164,16 @@ book.set("sorry", sorry)
 
 function check(t:Term){
 
-  type CallStack = { f: Term, args: Term[], prev: CallStack } | null
-  
-
+  type CallStack = { f: Term, args: Term[]} []
   function go(t:Term, cs: CallStack, used: SYM[], ty?:Term, live = true) : SYM[]{
-
     function checkSig(args: Term[], sig: Sign) : SYM[]{
       let A = sig.f(...args)
       if (A.length != args.length) raise(`Arity mismatch: expected ${A.length} arguments, got ${args.length}`)
       for (let i = 0; i < A.length; i++) {
-        let newuse = go(args[i], cs, used, A[i], sig.slots[i].live)
-        if (sig.slots[i].live) used = newuse
+        let argLive = live && sig.slots[i].live
+        let newuse = go(args[i], cs, used, A[i], argLive)
+        if (argLive) used = newuse
       }
-
       return used
     }
 
@@ -228,14 +188,7 @@ function check(t:Term){
     }
 
     if (t == rfl) return used
-
-    function searchStack(c: CallStack, t: Term){
-      c = cs
-      while (c){
-        if (c.f == t) return c
-        c = c.prev
-      } 
-    }
+    function searchStack(c: CallStack, t: Term){ return c.find(x=>x.f == t) }
 
     let type = t.ty
     if (t.ty == Hole) {
@@ -244,79 +197,62 @@ function check(t:Term){
     }
     if (checked.has(t)) return used
     type = run(type)
-    switch(t.$){
 
-      case "Uni":{
-        let ty = asTag(type, "Uni")
-        if (ty.Quant != 0) raise(`Expected Uni Type, got ${fmt(ty)}`)
-        return used
+    if (t.$ == "Uni"){
+      if (asTag(t.ty, "Uni").Quant != 0) raise(`Expected Uni Type, got ${fmt(t.ty)}`)
+
+    } else if (t.$ == "match"){
+      let arg = asTag(t.scr, "SYM")
+      let T = asTag(arg.ty, "ADT")
+      let old : SYM = {...arg}
+      let newuses: SYM[] = go(arg, cs, used, arg.ty, live)
+      zip(T.variants, t.srcs, (v, s, i)=>{
+        let vs = fillSign( v)
+        Object.assign(arg, adt(T, i, ...vs))
+        newuses.push(... go(s.f(...vs), cs, used, type).filter(x=>![...newuses, ...vs].includes(x)))
+      })
+      Object.assign(arg, old)
+      used = newuses
+
+    } else if (t.$ == "SYM"){
+      if (live && t.live) { if (type.ty != Data && used.includes(t)) raise(`Symbol ${fmt(t)} already used: ${fmt(t)}`) }
+      else{ if (live) raise(`Symbol ${fmt(t)} is not live`) }
+      if (live) used = [...used, t]
+
+    } else if (t.$ == "adt"){
+      let vari = asTag(type, "ADT").variants[t.tag]
+      if (t.srcs.length != vari.slots.length) raise(`invalid constructor args for ${fmt(type)}: [${t.srcs.map(x=>fmt(x))}]`)
+      return checkSig(t.srcs, vari)
+
+    } else if (t.$ == "Lam"){
+      if (searchStack(cs, t)) raise(`Non well-founded lambda detected`)
+      let aro = asTag(t.ty, "Arrow")
+      let vs = fillSign(aro.DOM)
+      return go(t.fn.f(...vs),  [...cs, { f: t, args: vs }], used, aro.COD.f(...vs)).filter(x=> !vs.includes(x))
+
+    } else if (t.$ == "APP"){
+      let REC = searchStack(cs, t.fn)
+      let aro = asTag(t.fn.ty, "Arrow")
+      used = checkSig(t.args, aro.DOM)
+      checkEQ(type, aro.COD.f(...t.args))
+      if (REC){
+        if (!REC.args.some((A, i) => (A.$ == "adt" && A.srcs.some(el => el == t.args[i]))))
+          raise(`Non well-founded application detected`)
       }
+      else return go(t.fn, cs, used, aro, live)
 
-      case "match":{
-        let arg = asTag(t.scr, "SYM")
-        let T = asTag(arg.ty, "ADT")
-        let old : SYM = {...arg}
-        let newuses: SYM[] = go(arg, cs, used, arg.ty, live)
-        zip(T.variants, t.srcs, (v, s, i)=>{
-          let vs = fillSign( v)
-          Object.assign(arg, adt(T, i, ...vs))
-          newuses.push(... go(s.f(...vs), cs, used, type).filter(x=>![...newuses, ...vs].includes(x)))
-        })
-        Object.assign(arg, old)
-        return newuses
-      }
+    } else if (t.$ == "Arrow"){ if (type == Data) raise(`Cannot construct Arrow of type Data`)
 
-      case "SYM":{
-        if (live && t.live) { if (type.ty != Data && used.includes(t)) raise(`Symbol ${fmt(t)} already used: ${fmt(t)}`) }
-        else{ if (live) raise(`Symbol ${fmt(t)} is not live`) }
-        return used.concat(live? [t] : [])
-      }
-
-      case "adt":{
-        let vari = asTag(type, "ADT").variants[t.tag]
-        if (t.srcs.length != vari.slots.length) raise(`invalid constructor args for ${fmt(type)}: [${t.srcs.map(x=>fmt(x))}]`)
-        return checkSig(t.srcs, vari)
-      }
-
-      case "Lam":{
-        if (searchStack(cs, t)) raise(`Non well-founded lambda detected`)
-        let aro = asTag(t.ty, "Arrow")
-        let vs = fillSign(aro.DOM)
-        return go(t.fn.f(...vs),  { f: t, args: vs, prev: cs } ,used, aro.COD.f(...vs)).filter(x=> !vs.includes(x))
-      }
-
-      case "APP":{
-
-        let REC = searchStack(cs, t.fn)
-        let aro = asTag(t.fn.ty, "Arrow")
-        used = checkSig(t.args, aro.DOM)
-        checkEQ(type, aro.COD.f(...t.args))
-        if (REC){
-          if (!zip(REC.args, t.args, (a,b)=>wellFounded(a,b)).some(x=>x)) raise(`Non well-founded application detected`)
-          return used
-        }
-        else return go(t.fn, cs, used, aro)
-
-      }
-
-      case "Arrow":{
-        if (type == Data) raise(`Cannot construct Arrow of type Data`)
-        return used
-      }
-      case "ADT":{
-        if (type == Data) {
-          for(let v of t.variants){
-            let vs = fillSign(v)
-            for (let s of vs){
-              if (s.ty.ty != Data) raise(`Cannot construct Data from non-Data type: ${fmt(s.ty)}`)
-            }
-          }
-        }
-        return used
-      }
+    } else if (t.$ == "ADT"){
+      if (type == Data)
+        for(let v of t.variants)
+          for (let s of fillSign(v))
+            if (s.ty.ty != Data) raise(`Cannot construct Data from non-Data type: ${fmt(s.ty)}`)
     }
+    return used
+
   }
-  go(t, null, [])
+  go(t, [], [])
   checked.add(t)
 }
 
@@ -507,14 +443,9 @@ function compile(s: string) : Term{
   function mkSign(args: annot[]): string{return mkF(args, `[${args.map(a=>a.ty)}]`)}
 
   function mkF(args: annot[], bod: string): string{
-    let r = `({
-    slots: [${args.map(a=> `{name: "${a.name}", live: ${a.live}}`).join(", ")}],
-    f: ${mkFun(args, bod)}
-    })`
-    return r
+    return `({ slots: [${args.map(a=> `{name: "${a.name}", live: ${a.live}}`).join(", ")}], f: ${`((${args.map(a=>a.name).join(", ")})=>${bod})`} })`
   }
 
-  function mkFun(args: annot[], bod: string): string{ return `((${args.map(a=>a.name).join(", ")})=>${bod})`}
 
   function mkLam(args: annot[], R: string, bod: string) : string {
     return [
@@ -549,17 +480,12 @@ function compile(s: string) : Term{
     let ty = goTerm(tr[2], ctx)
     code = `({...${goTerm(tr.slice(4), ctx, ty)}, ty: ${ty} })`
   }else raise(`unexpected syntactic form: ${JSON.stringify(tr)}`)
-  
   let Ctx = { match, book, $, obj, }
-
   try{
-
     Function(...Object.keys(Ctx),"check", `Object.assign(obj, ${code})`)(...Object.values(Ctx), check)
   }catch(e){
     book.delete(name)
-    console.error(`Error during compilation of ${name}:`, e)
-    console.error(`Code that caused the error: ${code}`)
-    raise(`Compilation failed for ${name}`)
+    raise(`Error during compilation of ${name}: ${e}\nCode that caused the error: ${code}`)
   }
   check(obj)
   store(obj, name)
@@ -784,3 +710,4 @@ compile(`( add.comm (n: Nat, m: Nat) : (== (+ n m) (+ m n)) =
 
 compile(`( AND (A: Type, B: Type) : Type  = | (a: A, b: B))`)
 
+compile(`( _f (T: Type, P: ((x:Type) -> Type), a: (P T) ) : (P T) = a )`)
